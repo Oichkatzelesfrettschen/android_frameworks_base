@@ -1960,12 +1960,14 @@ static void SpecializeCommon(JNIEnv* env, uid_t uid, gid_t gid, jintArray gids, 
     // since the directory is owned by root.
     if (getuid() == 0) {
         const int rc = createProcessGroup(uid, getpid());
+#if 0
         if (rc != 0) {
             fail_fn(rc == -EROFS ? CREATE_ERROR("createProcessGroup failed, kernel missing "
                                                 "CONFIG_CGROUP_CPUACCT?")
                                  : CREATE_ERROR("createProcessGroup(%d, %d) failed: %s", uid,
                                                 /* pid= */ 0, strerror(-rc)));
         }
+#endif
     }
 
     SetGids(env, gids, is_child_zygote, fail_fn);
