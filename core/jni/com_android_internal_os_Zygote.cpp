@@ -1962,10 +1962,15 @@ static void SpecializeCommon(JNIEnv* env, uid_t uid, gid_t gid, jintArray gids, 
         const int rc = createProcessGroup(uid, getpid());
 #if 0
         if (rc != 0) {
-            fail_fn(rc == -EROFS ? CREATE_ERROR("createProcessGroup failed, kernel missing "
-                                                "CONFIG_CGROUP_CPUACCT?")
-                                 : CREATE_ERROR("createProcessGroup(%d, %d) failed: %s", uid,
-                                                /* pid= */ 0, strerror(-rc)));
+            if (rc == -ESRCH) {
+                // If process is dead, treat this as a non-fatal error
+                ALOGE("createProcessGroup(%d, %d) failed: %s", uid, /* pid= */ 0, strerror(-rc));
+            } else {
+                fail_fn(rc == -EROFS ? CREATE_ERROR("createProcessGroup failed, kernel missing "
+                                                    "CONFIG_CGROUP_CPUACCT?")
+                                     : CREATE_ERROR("createProcessGroup(%d, %d) failed: %s", uid,
+                                                    /* pid= */ 0, strerror(-rc)));
+            }
         }
 #endif
     }
