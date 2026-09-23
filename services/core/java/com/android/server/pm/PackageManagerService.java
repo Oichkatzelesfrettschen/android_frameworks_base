@@ -4444,8 +4444,15 @@ public class PackageManagerService extends IPackageManager.Stub
         return Signature.areExactMatch(signatures, new Signature[]{MICROG_REAL_SIGNATURE});
     }
 
-    private static Optional<Signature> generateFakeSignature(AndroidPackage p) {
+    private static Optional<Signature> generateFakeSignature(AndroidPackage p,
+            Set<String> grantedPermissions) {
         if (!isMicrogSigned(p)) {
+            return Optional.empty();
+        }
+
+        // The user grants FAKE_PACKAGE_SIGNATURE at runtime; without it the
+        // package keeps its real signature.
+        if (!grantedPermissions.contains(android.Manifest.permission.FAKE_PACKAGE_SIGNATURE)) {
             return Optional.empty();
         }
 
@@ -4527,7 +4534,7 @@ public class PackageManagerService extends IPackageManager.Stub
             packageInfo.packageName = packageInfo.applicationInfo.packageName =
                     resolveExternalPackageNameLPr(p);
 
-            generateFakeSignature(p).ifPresent(fakeSignature -> {
+            generateFakeSignature(p, permissions).ifPresent(fakeSignature -> {
                 packageInfo.signatures = new Signature[]{fakeSignature};
                 try {
                     packageInfo.signingInfo = new SigningInfo(
