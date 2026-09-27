@@ -605,6 +605,11 @@ public class Camera {
         }
     }
 
+    /** @hide */
+    public int cameraInitForLegacyShim(int cameraId, Context context, int rotationOverride) {
+        return cameraInit(cameraId, context, rotationOverride);
+    }
+
     private boolean shouldForceSlowJpegMode() {
         Context applicationContext = ActivityThread.currentApplication().getApplicationContext();
         String[] slowJpegPackageNames = applicationContext.getResources().getStringArray(

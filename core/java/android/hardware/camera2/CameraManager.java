@@ -53,6 +53,7 @@ import android.hardware.camera2.impl.CameraDeviceImpl;
 import android.hardware.camera2.impl.CameraDeviceSetupImpl;
 import android.hardware.camera2.impl.CameraInjectionSessionImpl;
 import android.hardware.camera2.impl.CameraMetadataNative;
+import android.hardware.camera2.legacy.CameraDeviceUserShim;
 import android.hardware.camera2.legacy.LegacyMetadataMapper;
 import android.hardware.camera2.params.ExtensionSessionConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
@@ -1139,17 +1140,22 @@ public final class CameraManager {
                         "Camera service is currently unavailable");
                 }
 
-                AttributionSourceState clientAttribution =
-                        getClientAttribution(/* useContextAttributionSource= */ true);
-                cameraUser =
-                        cameraService.connectDevice(
-                                callbacks,
-                                cameraId,
-                                oomScoreOffset,
-                                mContext.getApplicationInfo().targetSdkVersion,
-                                rotationOverride,
-                                clientAttribution,
-                                getDevicePolicyFromContext(mContext), sharedMode);
+                if (SystemProperties.getBoolean("ro.camera.legacy_camera2_shim", false)
+                        && !cameraService.supportsCameraApi(cameraId, API_VERSION_2)) {
+                    if (sharedMode) {
+                        throw new ServiceSpecificException(ICameraService.ERROR_ILLEGAL_ARGUMENT,
+                                "Shared mode is unsupported for legacy cameras");
+                    }
+                    cameraUser = CameraDeviceUserShim.connectBinderShim(callbacks,
+                            Integer.parseInt(cameraId), characteristics, mContext,
+                            rotationOverride);
+                } else {
+                    AttributionSourceState clientAttribution =
+                            getClientAttribution(/* useContextAttributionSource= */ true);
+                    cameraUser = cameraService.connectDevice(callbacks, cameraId, oomScoreOffset,
+                            mContext.getApplicationInfo().targetSdkVersion, rotationOverride,
+                            clientAttribution, getDevicePolicyFromContext(mContext), sharedMode);
+                }
             } catch (ServiceSpecificException e) {
                 if (e.errorCode == ICameraService.ERROR_DEPRECATED_HAL) {
                     throw new AssertionError("Should've gone down the shim path");
