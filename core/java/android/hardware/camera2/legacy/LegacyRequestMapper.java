@@ -60,6 +60,15 @@ public class LegacyRequestMapper {
     static final int HTC_VIDEO_60FPS = 60;
 
     /**
+     * HTC HAL1 cameras record HDR video in hardware under the private
+     * "video-hdr" key: the Yushan II (ST ILP0100) companion ISP switches to its
+     * HDR mode and the OV4688 to its HDR sensor mode. The "hdr" scene mode is
+     * the separate multi-frame still-capture path.
+     */
+    private static final String KEY_HTC_VIDEO_HDR_SUPPORTED = "video-hdr-supported";
+    private static final String KEY_HTC_VIDEO_HDR = "video-hdr";
+
+    /**
      * Set the legacy parameters using the {@link LegacyRequest legacy request}.
      *
      * <p>The legacy request's parameters are changed as a side effect of calling this
@@ -362,6 +371,17 @@ public class LegacyRequestMapper {
                         modeToSet = Camera.Parameters.SCENE_MODE_AUTO;
                     }
                 }
+                // A recording that asks for the HDR scene takes the hardware
+                // HDR video path, as the HTC camera's hdr_video scene does; the
+                // 60 fps video mode excludes it.
+                boolean htcVideoHdr = Camera.Parameters.SCENE_MODE_HDR.equals(modeToSet)
+                        && "true".equals(params.get("recording-hint"))
+                        && "true".equals(params.get(KEY_HTC_VIDEO_HDR_SUPPORTED))
+                        && !htcVideo60;
+                if (htcVideoHdr) {
+                    modeToSet = Camera.Parameters.SCENE_MODE_AUTO;
+                }
+                setHtcVideoHdr(params, htcVideoHdr);
                 params.setSceneMode(modeToSet);
             }
         }
@@ -672,6 +692,20 @@ public class LegacyRequestMapper {
             }
         } else if (HTC_VIDEO_MODE_60FPS.equals(current)) {
             params.set(KEY_HTC_VIDEO_MODE, HTC_VIDEO_MODE_NORMAL);
+        }
+    }
+
+    /**
+     * Enter or leave the HTC hardware HDR video path. The key is written only
+     * when its state changes, so a steady request leaves the parameters equal
+     * and costs no setParameters call.
+     */
+    private static void setHtcVideoHdr(Camera.Parameters params, boolean videoHdr) {
+        String current = params.get(KEY_HTC_VIDEO_HDR);
+        if (videoHdr && !"true".equals(current)) {
+            params.set(KEY_HTC_VIDEO_HDR, "true");
+        } else if (!videoHdr && "true".equals(current)) {
+            params.set(KEY_HTC_VIDEO_HDR, "false");
         }
     }
 
