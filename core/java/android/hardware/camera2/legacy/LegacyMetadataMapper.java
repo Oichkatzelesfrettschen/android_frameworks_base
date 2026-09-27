@@ -21,10 +21,12 @@ import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.hardware.Camera;
 import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraMetadata;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.CaptureResult;
 import android.hardware.camera2.impl.CameraMetadataNative;
+import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.params.StreamConfiguration;
 import android.hardware.camera2.params.StreamConfigurationDuration;
 import android.hardware.camera2.utils.ArrayUtils;
@@ -489,7 +491,6 @@ public class LegacyMetadataMapper {
             m.set(CONTROL_AE_LOCK_AVAILABLE, aeLockAvailable);
         }
     }
-
 
     @SuppressWarnings({"unchecked"})
     private static void mapControlAf(CameraMetadataNative m, Camera.Parameters p) {
@@ -1219,6 +1220,235 @@ public class LegacyMetadataMapper {
         return baseDuration + area * stallPerArea;
     }
 
+
+    /**
+     * Set the legacy parameters using the {@link LegacyRequest legacy request}.
+     *
+     * <p>The legacy request's parameters are changed as a side effect of calling this
+     * method.</p>
+     *
+     * @param request a non-{@code null} legacy request
+     */
+    public static void convertRequestMetadata(LegacyRequest request) {
+        LegacyRequestMapper.convertRequestMetadata(request);
+    }
+
+    private static final int[] sAllowedTemplates = {
+            CameraDevice.TEMPLATE_PREVIEW,
+            CameraDevice.TEMPLATE_STILL_CAPTURE,
+            CameraDevice.TEMPLATE_RECORD,
+            // Disallowed templates in legacy mode:
+            // CameraDevice.TEMPLATE_VIDEO_SNAPSHOT,
+            // CameraDevice.TEMPLATE_ZERO_SHUTTER_LAG,
+            // CameraDevice.TEMPLATE_MANUAL
+    };
+
+    /**
+     * Create a request template
+     *
+     * @param c a non-{@code null} camera characteristics for this camera
+     * @param templateId a non-negative template ID
+     *
+     * @return a non-{@code null} request template
+     *
+     * @throws IllegalArgumentException if {@code templateId} was invalid
+     *
+     * @see android.hardware.camera2.CameraDevice#TEMPLATE_MANUAL
+     */
+    public static CameraMetadataNative createRequestTemplate(
+            CameraCharacteristics c, int templateId) {
+        if (!ArrayUtils.contains(sAllowedTemplates, templateId)) {
+            throw new IllegalArgumentException("templateId out of range");
+        }
+
+        CameraMetadataNative m = new CameraMetadataNative();
+
+        /*
+         * NOTE: If adding new code here and it needs to query the static info,
+         * query the camera characteristics, so we can reuse this for api2 code later
+         * to create our own templates in the framework
+         */
+
+        /*
+         * control.*
+         */
+
+        // control.awbMode
+        m.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO);
+        // AWB is always unconditionally available in API1 devices
+
+        // control.aeAntibandingMode
+        m.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CONTROL_AE_ANTIBANDING_MODE_AUTO);
+
+        // control.aeExposureCompensation
+        m.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 0);
+
+        // control.aeLock
+        m.set(CaptureRequest.CONTROL_AE_LOCK, false);
+
+        // control.aePrecaptureTrigger
+        m.set(CaptureRequest.CONTROL_AE_PRECAPTURE_TRIGGER, CONTROL_AE_PRECAPTURE_TRIGGER_IDLE);
+
+        // control.afTrigger
+        m.set(CaptureRequest.CONTROL_AF_TRIGGER, CONTROL_AF_TRIGGER_IDLE);
+
+        // control.awbMode
+        m.set(CaptureRequest.CONTROL_AWB_MODE, CONTROL_AWB_MODE_AUTO);
+
+        // control.awbLock
+        m.set(CaptureRequest.CONTROL_AWB_LOCK, false);
+
+        // control.aeRegions, control.awbRegions, control.afRegions
+        {
+            Rect activeArray = c.get(SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+            MeteringRectangle[] activeRegions =  new MeteringRectangle[] {
+                    new MeteringRectangle(/*x*/0, /*y*/0, /*width*/activeArray.width() - 1,
+                    /*height*/activeArray.height() - 1,/*weight*/0)};
+            m.set(CaptureRequest.CONTROL_AE_REGIONS, activeRegions);
+            m.set(CaptureRequest.CONTROL_AWB_REGIONS, activeRegions);
+            m.set(CaptureRequest.CONTROL_AF_REGIONS, activeRegions);
+        }
+
+        // control.captureIntent
+        {
+            int captureIntent;
+            switch (templateId) {
+                case CameraDevice.TEMPLATE_PREVIEW:
+                    captureIntent = CONTROL_CAPTURE_INTENT_PREVIEW;
+                    break;
+                case CameraDevice.TEMPLATE_STILL_CAPTURE:
+                    captureIntent = CONTROL_CAPTURE_INTENT_STILL_CAPTURE;
+                    break;
+                case CameraDevice.TEMPLATE_RECORD:
+                    captureIntent = CONTROL_CAPTURE_INTENT_VIDEO_RECORD;
+                    break;
+                default:
+                    // Can't get anything else since it's guarded by the IAE check
+                    throw new AssertionError("Impossible; keep in sync with sAllowedTemplates");
+            }
+            m.set(CaptureRequest.CONTROL_CAPTURE_INTENT, captureIntent);
+        }
+
+        // control.aeMode
+        m.set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON);
+        // AE is always unconditionally available in API1 devices
+
+        // control.mode
+        m.set(CaptureRequest.CONTROL_MODE, CONTROL_MODE_AUTO);
+
+        // control.afMode
+        {
+            Float minimumFocusDistance = c.get(LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+
+            int afMode;
+            if (minimumFocusDistance != null &&
+                    minimumFocusDistance == LENS_INFO_MINIMUM_FOCUS_DISTANCE_FIXED_FOCUS) {
+                // Cannot control auto-focus with fixed-focus cameras
+                afMode = CameraMetadata.CONTROL_AF_MODE_OFF;
+            } else {
+                // If a minimum focus distance is reported; the camera must have AF
+                afMode = CameraMetadata.CONTROL_AF_MODE_AUTO;
+
+                if (templateId == CameraDevice.TEMPLATE_RECORD ||
+                        templateId == CameraDevice.TEMPLATE_VIDEO_SNAPSHOT) {
+                    if (ArrayUtils.contains(c.get(CONTROL_AF_AVAILABLE_MODES),
+                            CONTROL_AF_MODE_CONTINUOUS_VIDEO)) {
+                        afMode = CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO;
+                    }
+                } else if (templateId == CameraDevice.TEMPLATE_PREVIEW ||
+                        templateId == CameraDevice.TEMPLATE_STILL_CAPTURE) {
+                    if (ArrayUtils.contains(c.get(CONTROL_AF_AVAILABLE_MODES),
+                            CONTROL_AF_MODE_CONTINUOUS_PICTURE)) {
+                        afMode = CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE;
+                    }
+                }
+            }
+
+            if (DEBUG) {
+                Log.v(TAG, "createRequestTemplate (templateId=" + templateId + ")," +
+                        " afMode=" + afMode + ", minimumFocusDistance=" + minimumFocusDistance);
+            }
+
+            m.set(CaptureRequest.CONTROL_AF_MODE, afMode);
+        }
+
+        {
+            // control.aeTargetFpsRange
+            Range<Integer>[] availableFpsRange = c.
+                    get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+
+            // Pick FPS range with highest max value, tiebreak on higher min value
+            Range<Integer> bestRange = availableFpsRange[0];
+            for (Range<Integer> r : availableFpsRange) {
+                if (bestRange.getUpper() < r.getUpper()) {
+                    bestRange = r;
+                } else if (bestRange.getUpper() == r.getUpper() &&
+                        bestRange.getLower() < r.getLower()) {
+                    bestRange = r;
+                }
+            }
+            m.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, bestRange);
+        }
+
+        // control.sceneMode -- DISABLED is always available
+        m.set(CaptureRequest.CONTROL_SCENE_MODE, CONTROL_SCENE_MODE_DISABLED);
+
+        // control.zoomRatio -- 1.0
+        m.set(CaptureRequest.CONTROL_ZOOM_RATIO, 1.0f);
+
+        /*
+         * statistics.*
+         */
+
+        // statistics.faceDetectMode
+        m.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, STATISTICS_FACE_DETECT_MODE_OFF);
+
+        /*
+         * flash.*
+         */
+
+        // flash.mode
+        m.set(CaptureRequest.FLASH_MODE, FLASH_MODE_OFF);
+
+        /*
+         * noiseReduction.*
+         */
+        if (templateId == CameraDevice.TEMPLATE_STILL_CAPTURE) {
+            m.set(CaptureRequest.NOISE_REDUCTION_MODE, NOISE_REDUCTION_MODE_HIGH_QUALITY);
+        } else {
+            m.set(CaptureRequest.NOISE_REDUCTION_MODE, NOISE_REDUCTION_MODE_FAST);
+        }
+
+        /*
+        * colorCorrection.*
+        */
+        if (templateId == CameraDevice.TEMPLATE_STILL_CAPTURE) {
+            m.set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE,
+                    COLOR_CORRECTION_ABERRATION_MODE_HIGH_QUALITY);
+        } else {
+            m.set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE,
+                    COLOR_CORRECTION_ABERRATION_MODE_FAST);
+        }
+
+        /*
+         * lens.*
+         */
+
+        // lens.focalLength
+        m.set(CaptureRequest.LENS_FOCAL_LENGTH,
+                c.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)[0]);
+
+        /*
+         * jpeg.*
+         */
+
+        // jpeg.thumbnailSize - set smallest non-zero size if possible
+        Size[] sizes = c.get(CameraCharacteristics.JPEG_AVAILABLE_THUMBNAIL_SIZES);
+        m.set(CaptureRequest.JPEG_THUMBNAIL_SIZE, (sizes.length > 1) ? sizes[1] : sizes[0]);
+
+        return m;
+    }
+
     private static int[] getTagsForKeys(Key<?>[] keys) {
         int[] tags = new int[keys.length];
 
@@ -1247,5 +1477,56 @@ public class LegacyMetadataMapper {
         }
 
         return tags;
+    }
+
+    /**
+     * Convert the requested AF mode into its equivalent supported parameter.
+     *
+     * @param mode {@code CONTROL_AF_MODE}
+     * @param supportedFocusModes list of camera1's supported focus modes
+     * @return the stringified af mode, or {@code null} if its not supported
+     */
+    static String convertAfModeToLegacy(int mode, List<String> supportedFocusModes) {
+        if (supportedFocusModes == null || supportedFocusModes.isEmpty()) {
+            Log.w(TAG, "No focus modes supported; API1 bug");
+            return null;
+        }
+
+        String param = null;
+        switch (mode) {
+            case CONTROL_AF_MODE_AUTO:
+                param = Camera.Parameters.FOCUS_MODE_AUTO;
+                break;
+            case CONTROL_AF_MODE_CONTINUOUS_PICTURE:
+                param = Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE;
+                break;
+            case CONTROL_AF_MODE_CONTINUOUS_VIDEO:
+                param = Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO;
+                break;
+            case CONTROL_AF_MODE_EDOF:
+                param = Camera.Parameters.FOCUS_MODE_EDOF;
+                break;
+            case CONTROL_AF_MODE_MACRO:
+                param = Camera.Parameters.FOCUS_MODE_MACRO;
+                break;
+            case CONTROL_AF_MODE_OFF:
+                if (supportedFocusModes.contains(Camera.Parameters.FOCUS_MODE_FIXED)) {
+                    param = Camera.Parameters.FOCUS_MODE_FIXED;
+                } else {
+                    param = Camera.Parameters.FOCUS_MODE_INFINITY;
+                }
+        }
+
+        if (!supportedFocusModes.contains(param)) {
+            // Weed out bad user input by setting to the first arbitrary focus mode
+            String defaultMode = supportedFocusModes.get(0);
+            Log.w(TAG,
+                    String.format(
+                            "convertAfModeToLegacy - ignoring unsupported mode %d, " +
+                            "defaulting to %s", mode, defaultMode));
+            param = defaultMode;
+        }
+
+        return param;
     }
 }
