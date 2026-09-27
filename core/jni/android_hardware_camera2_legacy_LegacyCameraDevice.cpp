@@ -20,6 +20,7 @@
 #include <utils/Errors.h>
 #include <utils/Trace.h>
 #include <camera/CameraUtils.h>
+#include <camera/camera2/OutputConfiguration.h>
 
 #include "jni.h"
 #include <nativehelper/JNIHelp.h>
@@ -602,7 +603,13 @@ static jint LegacyCameraDevice_nativeSetSurfaceOrientation(JNIEnv* env, jobject 
 
     int32_t transform = 0;
 
-    if ((err = CameraUtils::getRotationTransform(staticMetadata, /*out*/&transform)) != NO_ERROR) {
+    // MIRROR_MODE_AUTO flips front-facing buffers horizontally and the
+    // inverse-display flag keeps the buffer aligned with the physical sensor
+    // under UI rotation, the transform the HAL1 Camera2Client applies to its
+    // preview stream.
+    if ((err = CameraUtils::getRotationTransform(staticMetadata,
+            OutputConfiguration::MIRROR_MODE_AUTO, /*enableTransformInverseDisplay*/true,
+            /*out*/&transform)) != NO_ERROR) {
         ALOGE("%s: Invalid rotation transform %s (%d)", __FUNCTION__, strerror(-err),
                 err);
         return err;
