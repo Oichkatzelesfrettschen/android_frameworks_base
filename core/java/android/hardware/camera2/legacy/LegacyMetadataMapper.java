@@ -419,12 +419,20 @@ public class LegacyMetadataMapper {
             if (rangesSize <= 0) {
                 throw new AssertionError("At least one FPS range must be supported.");
             }
-            Range<Integer>[] ranges = new Range[rangesSize];
+            // The HTC 60 fps video mode sits outside preview-fps-range-values;
+            // LegacyRequestMapper selects it for a [60,60] request.
+            boolean htcVideo60 = "true".equals(
+                    p.get(LegacyRequestMapper.KEY_HTC_VIDEO_60FPS_SUPPORTED));
+            Range<Integer>[] ranges = new Range[rangesSize + (htcVideo60 ? 1 : 0)];
             int i = 0;
             for (int[] r : fpsRanges) {
                 ranges[i++] = Range.create(
                         (int) Math.floor(r[Camera.Parameters.PREVIEW_FPS_MIN_INDEX] / 1000.0),
                         (int) Math.ceil(r[Camera.Parameters.PREVIEW_FPS_MAX_INDEX] / 1000.0));
+            }
+            if (htcVideo60) {
+                ranges[i++] = Range.create(LegacyRequestMapper.HTC_VIDEO_60FPS,
+                        LegacyRequestMapper.HTC_VIDEO_60FPS);
             }
             m.set(CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, ranges);
         }
@@ -1377,9 +1385,15 @@ public class LegacyMetadataMapper {
             Range<Integer>[] availableFpsRange = c.
                     get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
 
-            // Pick FPS range with highest max value, tiebreak on higher min value
+            // Pick FPS range with highest max value, tiebreak on higher min value.
+            // The HTC 60 fps video mode is a recording mode an app selects
+            // explicitly, never a template default.
             Range<Integer> bestRange = availableFpsRange[0];
             for (Range<Integer> r : availableFpsRange) {
+                if (r.getLower() == LegacyRequestMapper.HTC_VIDEO_60FPS
+                        && r.getUpper() == LegacyRequestMapper.HTC_VIDEO_60FPS) {
+                    continue;
+                }
                 if (bestRange.getUpper() < r.getUpper()) {
                     bestRange = r;
                 } else if (bestRange.getUpper() == r.getUpper() &&

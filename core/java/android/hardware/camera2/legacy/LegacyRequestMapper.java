@@ -47,6 +47,19 @@ public class LegacyRequestMapper {
     private static final byte DEFAULT_JPEG_QUALITY = 85;
 
     /**
+     * HTC HAL1 cameras record 60 fps in a separate sensor mode selected by the
+     * private "video-mode" key (2 = 60 fps video, 0 = normal video). The HAL
+     * advertises the mode through "video-1080p60fps-supported", turns on its
+     * own 60 fps HFR stream when the mode is set, and keeps preview-fps-range
+     * at or below 30 fps, so no preview-fps-range expresses the mode.
+     */
+    static final String KEY_HTC_VIDEO_60FPS_SUPPORTED = "video-1080p60fps-supported";
+    private static final String KEY_HTC_VIDEO_MODE = "video-mode";
+    private static final String HTC_VIDEO_MODE_NORMAL = "0";
+    private static final String HTC_VIDEO_MODE_60FPS = "2";
+    static final int HTC_VIDEO_60FPS = 60;
+
+    /**
      * Set the legacy parameters using the {@link LegacyRequest legacy request}.
      *
      * <p>The legacy request's parameters are changed as a side effect of calling this
@@ -160,7 +173,9 @@ public class LegacyRequestMapper {
 
         // control.aeTargetFpsRange
         Range<Integer> aeFpsRange = request.get(CONTROL_AE_TARGET_FPS_RANGE);
-        if (aeFpsRange != null) {
+        boolean htcVideo60 = aeFpsRange != null && isHtcVideo60Request(params, aeFpsRange);
+        setHtcVideoMode(params, htcVideo60);
+        if (aeFpsRange != null && !htcVideo60) {
             int[] legacyFps = convertAeFpsRangeToLegacy(aeFpsRange);
 
             int[] rangeToApply = null;
@@ -293,7 +308,10 @@ public class LegacyRequestMapper {
                     /*allowedValue*/CONTROL_VIDEO_STABILIZATION_MODE_OFF);
 
             if (stabMode != null) {
-                params.setVideoStabilization(stabMode == CONTROL_VIDEO_STABILIZATION_MODE_ON);
+                // The 60 fps sensor mode runs without stabilization, as the
+                // HTC camera configures it.
+                params.setVideoStabilization(!htcVideo60 &&
+                        stabMode == CONTROL_VIDEO_STABILIZATION_MODE_ON);
             }
         }
 
@@ -626,6 +644,34 @@ public class LegacyRequestMapper {
             default: {
                 return null;
             }
+        }
+    }
+
+    /**
+     * Whether {@code range} asks for the HTC 60 fps video mode: exactly
+     * [60,60] on a HAL that advertises the mode.
+     */
+    private static boolean isHtcVideo60Request(Camera.Parameters params, Range<Integer> range) {
+        return range.getLower() == HTC_VIDEO_60FPS && range.getUpper() == HTC_VIDEO_60FPS
+                && "true".equals(params.get(KEY_HTC_VIDEO_60FPS_SUPPORTED));
+    }
+
+    /**
+     * Enter or leave the HTC 60 fps video mode. The HAL echoes "video-mode"
+     * only while the mode is 2, so the key is written when entering the mode
+     * and when leaving it, and otherwise left alone: rewriting an absent key
+     * on every request would change the parameters, and cost a
+     * setParameters call, on every frame.
+     */
+    private static void setHtcVideoMode(Camera.Parameters params, boolean video60) {
+        String current = params.get(KEY_HTC_VIDEO_MODE);
+        if (video60) {
+            if (!HTC_VIDEO_MODE_60FPS.equals(current)) {
+                params.set(KEY_HTC_VIDEO_MODE, HTC_VIDEO_MODE_60FPS);
+                params.set("video-hdr", "false");
+            }
+        } else if (HTC_VIDEO_MODE_60FPS.equals(current)) {
+            params.set(KEY_HTC_VIDEO_MODE, HTC_VIDEO_MODE_NORMAL);
         }
     }
 
