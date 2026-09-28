@@ -648,6 +648,23 @@ static void android_hardware_Camera_getCameraInfo(JNIEnv *env, jobject thiz, jin
             canDisableShutterSound);
 }
 
+// Maps a failed ICameraService::connect status to the errno value that
+// LegacyExceptionUtils.throwOnServiceError translates back into the matching
+// ICameraService error. Every other failure keeps -EACCES, which reads as
+// ERROR_DISABLED there and as "Fail to connect to camera service" in the
+// Camera constructor.
+static jint connectFailureToStatus(const binder::Status& status) {
+    if (status.exceptionCode() == binder::Status::EX_SERVICE_SPECIFIC) {
+        switch (status.serviceSpecificErrorCode()) {
+            case hardware::ICameraService::ERROR_CAMERA_IN_USE:
+                return -EBUSY;
+            case hardware::ICameraService::ERROR_MAX_CAMERAS_IN_USE:
+                return -EUSERS;
+        }
+    }
+    return -EACCES;
+}
+
 // connect to camera service
 static jint android_hardware_Camera_native_setup(JNIEnv *env, jobject thiz, jobject weak_this,
                                                  jint cameraId, jint rotationOverride,
@@ -662,10 +679,12 @@ static jint android_hardware_Camera_native_setup(JNIEnv *env, jobject thiz, jobj
     }
 
     int targetSdkVersion = android_get_application_target_sdk_version();
+    binder::Status connectStatus;
     sp<Camera> camera = Camera::connect(cameraId, targetSdkVersion, rotationOverride,
-                                        forceSlowJpegMode, clientAttribution, devicePolicy);
+                                        forceSlowJpegMode, clientAttribution, devicePolicy,
+                                        &connectStatus);
     if (camera == NULL) {
-        return -EACCES;
+        return connectFailureToStatus(connectStatus);
     }
 
     // make sure camera hardware is alive
