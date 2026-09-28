@@ -28,6 +28,7 @@ import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.Message;
 import android.os.SystemClock;
+import android.os.SystemProperties;
 import android.util.Log;
 import android.util.MutableLong;
 import android.util.Pair;
@@ -110,6 +111,27 @@ public class RequestThreadManager {
     // Stuff JPEGs into HAL_PIXEL_FORMAT_RGBA_8888 gralloc buffers to get around SW write
     // limitations for (b/17379185).
     private static final boolean USE_BLOB_FORMAT_OVERRIDE = true;
+
+    /*
+     * A back camera video encoder output is fed from the HAL1 recording stream, which runs at
+     * the recording fps range and video-mode, rather than from preview; false keeps it on the
+     * preview GL path.
+     */
+    private static final String RECORD_STREAM_PROPERTY = "debug.camera.legacy_record_stream";
+
+    /*
+     * The HTC HAL1 recomputes its fps range for the 30 fps video mode when video-mode 2 is set
+     * while preview is stopped, and keeps the 60 fps range of video-mode 2 when the key changes
+     * on a running preview. A request that introduces video-mode 2 before preview runs starts
+     * preview without it and applies it afterwards.
+     */
+    private static final String HTC_VIDEO_MODE_KEY = "video-mode";
+    private static final String HTC_VIDEO_MODE_HFR = "2";
+
+    // Video encoder output fed by the HAL1 recording stream, or null.
+    private Surface mRecordOutput;
+    private Size mRecordOutputSize;
+    private boolean mRecordStreamRunning = false;
 
     /**
      * Container object for Configure messages.
@@ -343,6 +365,61 @@ public class RequestThreadManager {
         }
     }
 
+    private static boolean isRecordStreamOutput(Surface s, int facing) {
+        if (facing != CameraCharacteristics.LENS_FACING_BACK
+                || !SystemProperties.getBoolean(RECORD_STREAM_PROPERTY, true)) {
+            return false;
+        }
+        try {
+            return LegacyCameraDevice.isVideoEncoderConsumer(s);
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Start the recording stream when a request first targets the recording output, and stop
+     * it when a repeating request no longer does. Single captures, such as a still during a
+     * recording, leave the stream running.
+     */
+    private void updateRecordStream(RequestHolder holder, boolean repeating) {
+        if (mRecordOutput == null) {
+            return;
+        }
+        boolean targeted;
+        try {
+            targeted = LegacyCameraDevice.containsSurfaceId(mRecordOutput,
+                    LegacyCameraDevice.getSurfaceIds(holder.getHolderTargets()));
+        } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+            holder.setOutputAbandoned();
+            return;
+        }
+        if (targeted && !mRecordStreamRunning) {
+            try {
+                LegacyCameraDevice.startRecordingStream(mCamera, mRecordOutput,
+                        mRecordOutputSize.getWidth(), mRecordOutputSize.getHeight());
+                mRecordStreamRunning = true;
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                Log.w(TAG, "Recording output abandoned, not starting the recording stream", e);
+                holder.setOutputAbandoned();
+            }
+        } else if (!targeted && mRecordStreamRunning && repeating) {
+            stopRecordStream();
+        }
+    }
+
+    private void stopRecordStream() {
+        if (!mRecordStreamRunning) {
+            return;
+        }
+        mRecordStreamRunning = false;
+        try {
+            LegacyCameraDevice.stopRecordingStream(mCamera, mRecordOutput);
+        } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+            Log.w(TAG, "Recording output abandoned while stopping the recording stream", e);
+        }
+    }
+
     private void configureOutputs(Collection<Pair<Surface, Size>> outputs) {
         if (DEBUG) {
             String outputsStr = outputs == null ? "null" : (outputs.size() + " surfaces");
@@ -350,6 +427,7 @@ public class RequestThreadManager {
         }
 
         try {
+            stopRecordStream();
             stopPreview();
         }  catch (RuntimeException e) {
             Log.e(TAG, "Received device exception in configure call: ", e);
@@ -386,6 +464,8 @@ public class RequestThreadManager {
         mCallbackOutputs.clear();
         mJpegSurfaceIds.clear();
         mPreviewTexture = null;
+        mRecordOutput = null;
+        mRecordOutputSize = null;
 
         List<Size> previewOutputSizes = new ArrayList<>();
         List<Size> callbackOutputSizes = new ArrayList<>();
@@ -415,6 +495,11 @@ public class RequestThreadManager {
                             LegacyCameraDevice.connectSurface(s);
                             break;
                         default:
+                            if (mRecordOutput == null && isRecordStreamOutput(s, facing)) {
+                                mRecordOutput = s;
+                                mRecordOutputSize = outSize;
+                                break;
+                            }
                             LegacyCameraDevice.setScalingMode(s, LegacyCameraDevice.
                                     NATIVE_WINDOW_SCALING_MODE_SCALE_TO_WINDOW);
                             mPreviewOutputs.add(s);
@@ -433,6 +518,42 @@ public class RequestThreadManager {
             mDeviceState.setError(
                 CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE);
             return;
+        }
+
+        if (mRecordOutput != null) {
+            /*
+             * The recording stream runs beside preview, which paces request completion, and it
+             * produces only the HAL's video sizes; otherwise the output stays on the GL path.
+             */
+            List<Camera.Size> videoSizes = mParams.getSupportedVideoSizes();
+            if (videoSizes == null) {
+                videoSizes = mParams.getSupportedPreviewSizes();
+            }
+            boolean videoSizeSupported = false;
+            for (Camera.Size v : videoSizes) {
+                if (v.width == mRecordOutputSize.getWidth()
+                        && v.height == mRecordOutputSize.getHeight()) {
+                    videoSizeSupported = true;
+                    break;
+                }
+            }
+            if (videoSizeSupported && !mPreviewOutputs.isEmpty()) {
+                mParams.set("video-size", mRecordOutputSize.getWidth() + "x"
+                        + mRecordOutputSize.getHeight());
+                Log.i(TAG, "configureOutputs - recording stream feeds the " + mRecordOutputSize
+                        + " video encoder output");
+            } else {
+                try {
+                    LegacyCameraDevice.setScalingMode(mRecordOutput, LegacyCameraDevice.
+                            NATIVE_WINDOW_SCALING_MODE_SCALE_TO_WINDOW);
+                    mPreviewOutputs.add(mRecordOutput);
+                    previewOutputSizes.add(mRecordOutputSize);
+                } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                    Log.w(TAG, "Surface abandoned, skipping...", e);
+                }
+                mRecordOutput = null;
+                mRecordOutputSize = null;
+            }
         }
 
         List<int[]> supportedFpsRanges = mParams.getSupportedPreviewFpsRange();
@@ -781,6 +902,7 @@ public class RequestThreadManager {
                         CaptureRequest request = holder.getRequest();
 
                         boolean paramsChanged = false;
+                        Camera.Parameters deferredVideoModeParams = null;
 
                         // Only update parameters if the request has changed
                         if (mLastRequest == null || mLastRequest.captureRequest != request) {
@@ -799,7 +921,16 @@ public class RequestThreadManager {
                             // If the parameters have changed, set them in the Camera1 API.
                             if (!mParams.same(legacyRequest.parameters)) {
                                 try {
-                                    mCamera.setParameters(legacyRequest.parameters);
+                                    Camera.Parameters applied = legacyRequest.parameters;
+                                    if (!mPreviewRunning && holder.hasPreviewTargets()
+                                            && HTC_VIDEO_MODE_HFR.equals(
+                                                    applied.get(HTC_VIDEO_MODE_KEY))) {
+                                        deferredVideoModeParams = applied;
+                                        applied = Camera.getEmptyParameters();
+                                        applied.unflatten(deferredVideoModeParams.flatten());
+                                        applied.remove(HTC_VIDEO_MODE_KEY);
+                                    }
+                                    mCamera.setParameters(applied);
                                 } catch (RuntimeException e) {
                                     // If setting the parameters failed, report a request error to
                                     // the camera client, and skip any further work for this request
@@ -835,6 +966,10 @@ public class RequestThreadManager {
                             // face detection or auto focus
                             if (holder.hasPreviewTargets()) {
                                 doPreviewCapture(holder);
+                                if (deferredVideoModeParams != null) {
+                                    mCamera.setParameters(deferredVideoModeParams);
+                                }
+                                updateRecordStream(holder, burstHolder.isRepeating());
                             }
                             if (holder.hasJpegTargets()) {
                                 while(!mCaptureCollector.waitForPreviewsEmpty(PREVIEW_FRAME_TIMEOUT,
@@ -976,6 +1111,9 @@ public class RequestThreadManager {
                         Log.e(TAG, "Interrupted while waiting for requests to complete: ", e);
                         mDeviceState.setError(
                                 CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE);
+                    }
+                    if (mCamera != null) {
+                        stopRecordStream();
                     }
                     if (mGLThreadManager != null) {
                         mGLThreadManager.quit();

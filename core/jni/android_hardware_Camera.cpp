@@ -35,6 +35,7 @@
 #include <utils/Log.h>
 #include <utils/Vector.h>
 
+#include "android_hardware_Camera.h"
 #include "core_jni_helpers.h"
 #include "jni.h"
 
@@ -90,6 +91,7 @@ public:
     void addCallbackBuffer(JNIEnv *env, jbyteArray cbb, int msgType);
     void setCallbackMode(JNIEnv *env, bool installed, bool manualMode);
     sp<Camera> getCamera() { Mutex::Autolock _l(mLock); return mCamera; }
+    sp<CameraRecordingFrameSink> setRecordingFrameSink(const sp<CameraRecordingFrameSink>& sink);
     bool isRawImageCallbackBufferAvailable() const;
     void release();
 
@@ -106,6 +108,13 @@ private:
     jclass      mRectClass;  // strong reference to Rect class
     jclass      mPointClass;  // strong reference to Point class
     Mutex       mLock;
+
+    /*
+     * Receiver of CAMERA_MSG_VIDEO_FRAME data. mRecordingSinkLock is separate
+     * from mLock so a sink copying a frame never blocks the Java callbacks.
+     */
+    Mutex       mRecordingSinkLock;
+    sp<CameraRecordingFrameSink> mRecordingSink;
 
     /*
      * Global reference application-managed raw image buffer queue.
@@ -148,6 +157,30 @@ sp<Camera> get_native_camera(JNIEnv *env, jobject thiz, JNICameraContext** pCont
 
     if (pContext != NULL) *pContext = context;
     return camera;
+}
+
+sp<Camera> android::android_hardware_Camera_setRecordingFrameSink(JNIEnv* env, jobject camera,
+        const sp<CameraRecordingFrameSink>& sink, sp<CameraRecordingFrameSink>* previous)
+{
+    JNICameraContext* context;
+    sp<Camera> nativeCamera = get_native_camera(env, camera, &context);
+    if (nativeCamera == nullptr) {
+        return nullptr;
+    }
+    sp<CameraRecordingFrameSink> replaced = context->setRecordingFrameSink(sink);
+    if (previous != nullptr) {
+        *previous = replaced;
+    }
+    return nativeCamera;
+}
+
+sp<CameraRecordingFrameSink> JNICameraContext::setRecordingFrameSink(
+        const sp<CameraRecordingFrameSink>& sink)
+{
+    Mutex::Autolock _l(mRecordingSinkLock);
+    sp<CameraRecordingFrameSink> previous = mRecordingSink;
+    mRecordingSink = sink;
+    return previous;
 }
 
 JNICameraContext::JNICameraContext(JNIEnv* env, jobject weak_this, jclass clazz, const sp<Camera>& camera)
@@ -197,6 +230,10 @@ void JNICameraContext::release()
     }
     clearCallbackBuffers_l(env);
     mCamera.clear();
+    {
+        Mutex::Autolock _sl(mRecordingSinkLock);
+        mRecordingSink.clear();
+    }
 }
 
 void JNICameraContext::notify(int32_t msgType, int32_t ext1, int32_t ext2)
@@ -358,6 +395,25 @@ void JNICameraContext::postData(int32_t msgType, const sp<IMemory>& dataPtr,
 
 void JNICameraContext::postDataTimestamp(nsecs_t timestamp, int32_t msgType, const sp<IMemory>& dataPtr)
 {
+    if (msgType == CAMERA_MSG_VIDEO_FRAME) {
+        // A recording frame belongs to the HAL's video buffer pool: it goes to the
+        // installed sink, which returns it, or straight back to the HAL.
+        sp<CameraRecordingFrameSink> sink;
+        {
+            Mutex::Autolock _l(mRecordingSinkLock);
+            sink = mRecordingSink;
+        }
+        sp<Camera> camera = getCamera();
+        if (camera == nullptr) {
+            return;
+        }
+        if (sink != nullptr) {
+            sink->onRecordingFrame(camera, timestamp, dataPtr);
+        } else {
+            camera->releaseRecordingFrame(dataPtr);
+        }
+        return;
+    }
     // TODO: plumb up to Java. For now, just drop the timestamp
     postData(msgType, dataPtr, NULL);
 }
