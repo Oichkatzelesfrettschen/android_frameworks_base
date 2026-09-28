@@ -80,6 +80,7 @@ extern int register_android_hardware_camera2_CameraMetadata(JNIEnv *env);
 extern int register_android_hardware_camera2_CameraDevice(JNIEnv *env);
 extern int register_android_hardware_camera2_DngCreator(JNIEnv *env);
 extern int register_android_hardware_camera2_impl_CameraExtensionJpegProcessor(JNIEnv* env);
+extern int register_android_hardware_camera2_legacy_LegacyCameraDevice(JNIEnv* env);
 extern int register_android_hardware_camera2_utils_SurfaceUtils(JNIEnv* env);
 extern int register_android_hardware_display_DisplayManagerGlobal(JNIEnv* env);
 extern int register_android_hardware_HardwareBuffer(JNIEnv *env);
@@ -1629,6 +1630,7 @@ static const RegJNIRec gRegJNI[] = {
         REG_JNI(register_android_hardware_camera2_CameraDevice),
         REG_JNI(register_android_hardware_camera2_DngCreator),
         REG_JNI(register_android_hardware_camera2_impl_CameraExtensionJpegProcessor),
+        REG_JNI(register_android_hardware_camera2_legacy_LegacyCameraDevice),
         REG_JNI(register_android_hardware_camera2_utils_SurfaceUtils),
         REG_JNI(register_android_hardware_display_DisplayManagerGlobal),
         REG_JNI(register_android_hardware_HardwareBuffer),

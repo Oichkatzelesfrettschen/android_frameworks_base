@@ -32,8 +32,8 @@ public class LegacyExceptionUtils {
     public static final int PERMISSION_DENIED = -EPERM;
     public static final int ALREADY_EXISTS = -EEXIST;
     public static final int BAD_VALUE = -EINVAL;
-    public static final int DEAD_OBJECT = -ENOSYS;
-    public static final int INVALID_OPERATION = -EPIPE;
+    public static final int DEAD_OBJECT = -EPIPE;
+    public static final int INVALID_OPERATION = -ENOSYS;
     public static final int TIMED_OUT = -ETIMEDOUT;
 
     /**

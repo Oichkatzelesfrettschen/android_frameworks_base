@@ -1155,6 +1155,11 @@ public final class OutputConfiguration implements Parcelable {
         return (mPhysicalCameraId != null);
     }
 
+    /** @hide */
+    public boolean isMultiResolution() {
+        return mIsMultiResolution;
+    }
+
     /**
      * Check if this configuration has deferred configuration.
      *
