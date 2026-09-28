@@ -43,6 +43,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Point;
 import android.hardware.Camera;
+import android.hardware.CameraInfo;
 import android.hardware.CameraExtensionSessionStats;
 import android.hardware.CameraStatus;
 import android.hardware.ICameraService;
@@ -52,6 +53,7 @@ import android.hardware.camera2.impl.CameraDeviceImpl;
 import android.hardware.camera2.impl.CameraDeviceSetupImpl;
 import android.hardware.camera2.impl.CameraInjectionSessionImpl;
 import android.hardware.camera2.impl.CameraMetadataNative;
+import android.hardware.camera2.legacy.LegacyMetadataMapper;
 import android.hardware.camera2.params.ExtensionSessionConfiguration;
 import android.hardware.camera2.params.SessionConfiguration;
 import android.hardware.camera2.params.StreamConfiguration;
@@ -778,14 +780,25 @@ public final class CameraManager {
                         "Camera service is currently unavailable");
             }
             try {
-                CameraMetadataNative info =
-                        cameraService.getCameraCharacteristics(
-                                cameraId,
-                                mContext.getApplicationInfo().targetSdkVersion,
-                                rotationOverride,
-                                getClientAttribution(),
-                                getDevicePolicyFromContext(mContext));
-                characteristics = prepareCameraCharacteristics(cameraId, info, cameraService);
+                if (SystemProperties.getBoolean("ro.camera.legacy_camera2_shim", false)
+                        && !cameraService.supportsCameraApi(cameraId, API_VERSION_2)) {
+                    int legacyCameraId = Integer.parseInt(cameraId);
+                    String parameters = cameraService.getLegacyParameters(legacyCameraId);
+                    CameraInfo cameraInfo = cameraService.getCameraInfo(legacyCameraId,
+                            rotationOverride, getClientAttribution(),
+                            getDevicePolicyFromContext(mContext));
+                    characteristics = LegacyMetadataMapper.createCharacteristics(parameters,
+                            cameraInfo, legacyCameraId, getDisplaySize());
+                } else {
+                    CameraMetadataNative info =
+                            cameraService.getCameraCharacteristics(
+                                    cameraId,
+                                    mContext.getApplicationInfo().targetSdkVersion,
+                                    rotationOverride,
+                                    getClientAttribution(),
+                                    getDevicePolicyFromContext(mContext));
+                    characteristics = prepareCameraCharacteristics(cameraId, info, cameraService);
+                }
             } catch (ServiceSpecificException e) {
                 throw ExceptionUtils.throwAsPublicException(e);
             } catch (RemoteException e) {
