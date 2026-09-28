@@ -52,6 +52,14 @@ public class LegacyFocusStateMapper {
     private int mAfState = CONTROL_AF_STATE_INACTIVE;
 
     /**
+     * AF run and mode the registered move callback captured. Registration sends
+     * CAMERA_CMD_ENABLE_FOCUS_MOVE_MSG through cameraserver to the HAL, so it
+     * is repeated only when either value changes. Accessed on the request thread.
+     */
+    private int mAfMoveCallbackRun = -1;
+    private String mAfMoveCallbackMode = null;
+
+    /**
      * Instantiate a new focus state mapper.
      *
      * @param camera a non-{@code null} camera1 device
@@ -60,6 +68,59 @@ public class LegacyFocusStateMapper {
      */
     public LegacyFocusStateMapper(Camera camera) {
         mCamera = checkNotNull(camera, "camera must not be null");
+    }
+
+    private void registerAfMoveCallback(final String afMode, final int currentAfRun) {
+        Camera.AutoFocusMoveCallback afMoveCallback = new Camera.AutoFocusMoveCallback() {
+            @Override
+            public void onAutoFocusMoving(boolean start, Camera camera) {
+                synchronized (mLock) {
+                    int latestAfRun = mAfRun;
+
+                    if (DEBUG) {
+                        Log.v(TAG,
+                                "onAutoFocusMoving - start " + start + " latest AF run " +
+                                        latestAfRun + ", last AF run " + currentAfRun
+                        );
+                    }
+
+                    if (currentAfRun != latestAfRun) {
+                        Log.d(TAG,
+                                "onAutoFocusMoving - ignoring move callbacks from old af run"
+                                        + currentAfRun
+                        );
+                        return;
+                    }
+
+                    int newAfState = start ?
+                            CONTROL_AF_STATE_PASSIVE_SCAN :
+                            CONTROL_AF_STATE_PASSIVE_FOCUSED;
+                    // We never send CONTROL_AF_STATE_PASSIVE_UNFOCUSED
+
+                    switch (afMode) {
+                        case Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE:
+                        case Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO:
+                            break;
+                        // This callback should never be sent in any other AF mode
+                        default:
+                            Log.w(TAG, "onAutoFocus - got unexpected onAutoFocus in mode "
+                                    + afMode);
+
+                    }
+
+                    mAfState = newAfState;
+                }
+            }
+        };
+
+        // Only set move callback if we can call autofocus.
+        switch (afMode) {
+            case Camera.Parameters.FOCUS_MODE_AUTO:
+            case Camera.Parameters.FOCUS_MODE_MACRO:
+            case Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE:
+            case Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO:
+                mCamera.setAutoFocusMoveCallback(afMoveCallback);
+        }
     }
 
     /**
@@ -113,55 +174,11 @@ public class LegacyFocusStateMapper {
                 currentAfRun = mAfRun;
             }
 
-            Camera.AutoFocusMoveCallback afMoveCallback = new Camera.AutoFocusMoveCallback() {
-                @Override
-                public void onAutoFocusMoving(boolean start, Camera camera) {
-                    synchronized (mLock) {
-                        int latestAfRun = mAfRun;
-
-                        if (DEBUG) {
-                            Log.v(TAG,
-                                    "onAutoFocusMoving - start " + start + " latest AF run " +
-                                            latestAfRun + ", last AF run " + currentAfRun
-                            );
-                        }
-
-                        if (currentAfRun != latestAfRun) {
-                            Log.d(TAG,
-                                    "onAutoFocusMoving - ignoring move callbacks from old af run"
-                                            + currentAfRun
-                            );
-                            return;
-                        }
-
-                        int newAfState = start ?
-                                CONTROL_AF_STATE_PASSIVE_SCAN :
-                                CONTROL_AF_STATE_PASSIVE_FOCUSED;
-                        // We never send CONTROL_AF_STATE_PASSIVE_UNFOCUSED
-
-                        switch (afMode) {
-                            case Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE:
-                            case Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO:
-                                break;
-                            // This callback should never be sent in any other AF mode
-                            default:
-                                Log.w(TAG, "onAutoFocus - got unexpected onAutoFocus in mode "
-                                        + afMode);
-
-                        }
-
-                        mAfState = newAfState;
-                    }
-                }
-            };
-
-            // Only set move callback if we can call autofocus.
-            switch (afMode) {
-                case Camera.Parameters.FOCUS_MODE_AUTO:
-                case Camera.Parameters.FOCUS_MODE_MACRO:
-                case Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE:
-                case Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO:
-                    mCamera.setAutoFocusMoveCallback(afMoveCallback);
+            if (currentAfRun != mAfMoveCallbackRun
+                    || !Objects.equals(afMode, mAfMoveCallbackMode)) {
+                mAfMoveCallbackRun = currentAfRun;
+                mAfMoveCallbackMode = afMode;
+                registerAfMoveCallback(afMode, currentAfRun);
             }
         }
 
