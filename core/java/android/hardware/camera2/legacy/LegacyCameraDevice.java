@@ -740,6 +740,31 @@ public class LegacyCameraDevice implements AutoCloseable {
         LegacyExceptionUtils.throwOnError(nativeDisconnectSurface(surface));
     }
 
+    /**
+     * Start the HAL1 recording stream of {@code camera} with its frames delivered as YUV
+     * data callbacks, and copy each frame into {@code surface}, a video encoder input
+     * surface of {@code width} by {@code height} that no other producer is connected to.
+     * The recording stream carries the rates the HAL gives only to recording, such as the
+     * 60 fps of the HTC {@code video-mode} 2.
+     */
+    static void startRecordingStream(Camera camera, Surface surface, int width, int height)
+            throws BufferQueueAbandonedException {
+        checkNotNull(camera);
+        checkNotNull(surface);
+        LegacyExceptionUtils.throwOnError(nativeStartRecordingStream(camera, surface, width,
+                height));
+    }
+
+    /**
+     * Stop the recording stream started by {@link #startRecordingStream} and disconnect
+     * {@code surface}.
+     */
+    static void stopRecordingStream(Camera camera, Surface surface)
+            throws BufferQueueAbandonedException {
+        checkNotNull(camera);
+        LegacyExceptionUtils.throwOnError(nativeStopRecordingStream(camera, surface));
+    }
+
     static void produceFrame(Surface surface, byte[] pixelBuffer, int width,
                              int height, int pixelFormat)
             throws BufferQueueAbandonedException {
@@ -878,6 +903,11 @@ public class LegacyCameraDevice implements AutoCloseable {
     private static native int nativeSetScalingMode(Surface surface, int scalingMode);
 
     private static native int nativeDisconnectSurface(Surface surface);
+
+    private static native int nativeStartRecordingStream(Camera camera, Surface surface,
+            int width, int height);
+
+    private static native int nativeStopRecordingStream(Camera camera, Surface surface);
 
     static native int nativeGetJpegFooterSize();
 }

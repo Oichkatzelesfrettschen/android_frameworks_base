@@ -24,6 +24,7 @@
 
 #include "jni.h"
 #include <nativehelper/JNIHelp.h>
+#include "android_hardware_Camera.h"
 #include "core_jni_helpers.h"
 #include "android_runtime/android_view_Surface.h"
 #include "android_runtime/android_graphics_SurfaceTexture.h"
@@ -36,6 +37,7 @@
 #include <system/camera_metadata.h>
 #include <system/window.h>
 #include <ui/GraphicBuffer.h>
+#include <utils/Mutex.h>
 
 #include <stdint.h>
 #include <inttypes.h>
@@ -440,6 +442,140 @@ static sp<Surface> getSurface(JNIEnv* env, jobject surface) {
     return s;
 }
 
+/*
+ * Copies the HAL1 recording stream into a video encoder input surface.
+ *
+ * With VIDEO_BUFFER_MODE_DATA_CALLBACK_YUV the HAL delivers each recording
+ * frame as NV12 pixels in shared memory, laid out as the Venus encoder input
+ * (Y stride aligned to 128, Y scanlines to 32, chroma scanlines to 16, chroma
+ * after the padded luma plane), or tightly packed. Each frame is copied row by
+ * row into a buffer dequeued from the encoder surface, stamped with the HAL
+ * timestamp, and returned to the HAL before onRecordingFrame returns, so the
+ * HAL's fixed video buffer pool never waits on the encoder. A frame that finds
+ * no free encoder buffer within kDequeueTimeoutNs is dropped.
+ */
+class RecordingStreamBridge : public CameraRecordingFrameSink {
+public:
+    RecordingStreamBridge(const sp<Surface>& surface, uint32_t width, uint32_t height)
+            : mSurface(surface), mWidth(width), mHeight(height) {}
+
+    void onRecordingFrame(const sp<Camera>& camera, nsecs_t timestamp,
+            const sp<IMemory>& frame) override {
+        {
+            Mutex::Autolock _l(mLock);
+            if (mActive && frame != nullptr) {
+                copyFrame_l(timestamp, frame);
+            }
+        }
+        camera->releaseRecordingFrame(frame);
+    }
+
+    void deactivate() override {
+        Mutex::Autolock _l(mLock);
+        mActive = false;
+        ALOGI("%s: %ux%u recording stream: %" PRIu64 " frames copied, %" PRIu64 " dropped",
+                __FUNCTION__, mWidth, mHeight, mCopied, mDropped);
+    }
+
+    static constexpr nsecs_t dequeueTimeoutNs() { return kDequeueTimeoutNs; }
+
+private:
+    static constexpr nsecs_t kDequeueTimeoutNs = 20000000; // 20 ms
+
+    void copyFrame_l(nsecs_t timestamp, const sp<IMemory>& frame) {
+        const uint8_t* src = static_cast<const uint8_t*>(frame->unsecurePointer());
+        const size_t srcSize = frame->size();
+        const size_t chromaRows = (mHeight + 1) / 2;
+        size_t srcYStride = ALIGN(mWidth, 128);
+        size_t srcChromaOffset = srcYStride * ALIGN(mHeight, 32);
+        if (src == nullptr || srcSize < srcChromaOffset + srcYStride * chromaRows) {
+            srcYStride = mWidth;
+            srcChromaOffset = static_cast<size_t>(mWidth) * mHeight;
+            if (src == nullptr || srcSize < srcChromaOffset + srcYStride * chromaRows) {
+                ALOGE("%s: %zu-byte frame is too small for %ux%u NV12", __FUNCTION__, srcSize,
+                        mWidth, mHeight);
+                mDropped++;
+                return;
+            }
+        }
+
+        ANativeWindow* anw = mSurface.get();
+        ANativeWindowBuffer* anb;
+        status_t err = native_window_dequeue_buffer_and_wait(anw, &anb);
+        if (err != NO_ERROR) {
+            if (mDropped++ == 0 || err != TIMED_OUT) {
+                ALOGW("%s: no encoder buffer, dropping frame: %s (%d)", __FUNCTION__,
+                        strerror(-err), err);
+            }
+            return;
+        }
+        sp<GraphicBuffer> buf(GraphicBuffer::from(anb));
+        android_ycbcr ycbcr = android_ycbcr();
+        err = buf->lockYCbCr(GRALLOC_USAGE_SW_WRITE_OFTEN, &ycbcr);
+        if (err != NO_ERROR) {
+            ALOGE("%s: lockYCbCr failed: %s (%d)", __FUNCTION__, strerror(-err), err);
+            anw->cancelBuffer(anw, anb, /*fenceFd*/-1);
+            mDropped++;
+            return;
+        }
+        if (mCopied == 0) {
+            ALOGI("%s: %ux%u source %zu bytes, y stride %zu, chroma at %zu; target y stride %zu,"
+                    " c stride %zu, chroma step %zu, cb at %td, cr at %td", __FUNCTION__, mWidth,
+                    mHeight, srcSize, srcYStride, srcChromaOffset, ycbcr.ystride, ycbcr.cstride,
+                    ycbcr.chroma_step, static_cast<uint8_t*>(ycbcr.cb) -
+                    static_cast<uint8_t*>(ycbcr.y), static_cast<uint8_t*>(ycbcr.cr) -
+                    static_cast<uint8_t*>(ycbcr.y));
+        }
+
+        uint8_t* dstY = static_cast<uint8_t*>(ycbcr.y);
+        for (size_t row = 0; row < mHeight; row++) {
+            memcpy(dstY + row * ycbcr.ystride, src + row * srcYStride, mWidth);
+        }
+        const uint8_t* srcC = src + srcChromaOffset;
+        uint8_t* dstCb = static_cast<uint8_t*>(ycbcr.cb);
+        uint8_t* dstCr = static_cast<uint8_t*>(ycbcr.cr);
+        for (size_t row = 0; row < chromaRows; row++) {
+            const uint8_t* in = srcC + row * srcYStride;
+            if (ycbcr.chroma_step == 2 && dstCr == dstCb + 1) {
+                memcpy(dstCb + row * ycbcr.cstride, in, mWidth & ~1u);
+                continue;
+            }
+            uint8_t* cb = dstCb + row * ycbcr.cstride;
+            uint8_t* cr = dstCr + row * ycbcr.cstride;
+            for (size_t col = 0; col < mWidth / 2; col++) {
+                cb[col * ycbcr.chroma_step] = in[2 * col];
+                cr[col * ycbcr.chroma_step] = in[2 * col + 1];
+            }
+        }
+
+        err = buf->unlock();
+        if (err == NO_ERROR) {
+            err = native_window_set_buffers_timestamp(anw, timestamp);
+        }
+        if (err != NO_ERROR) {
+            ALOGE("%s: unable to finish buffer: %s (%d)", __FUNCTION__, strerror(-err), err);
+            anw->cancelBuffer(anw, anb, /*fenceFd*/-1);
+            mDropped++;
+            return;
+        }
+        err = anw->queueBuffer(anw, anb, /*fenceFd*/-1);
+        if (err != NO_ERROR) {
+            ALOGE("%s: queueBuffer failed: %s (%d)", __FUNCTION__, strerror(-err), err);
+            mDropped++;
+            return;
+        }
+        mCopied++;
+    }
+
+    Mutex mLock;
+    const sp<Surface> mSurface;
+    const uint32_t mWidth;
+    const uint32_t mHeight;
+    bool mActive = true;
+    uint64_t mCopied = 0;
+    uint64_t mDropped = 0;
+};
+
 extern "C" {
 
 static jint LegacyCameraDevice_nativeDisconnectSurface(JNIEnv* env, jobject thiz,
@@ -663,6 +799,75 @@ static jint LegacyCameraDevice_nativeSetScalingMode(JNIEnv* env, jobject thiz, j
     return NO_ERROR;
 }
 
+static jint LegacyCameraDevice_nativeStartRecordingStream(JNIEnv* env, jobject thiz,
+        jobject camera, jobject surface, jint width, jint height) {
+    ALOGV("nativeStartRecordingStream");
+    if (width <= 0 || height <= 0) {
+        return BAD_VALUE;
+    }
+    sp<Surface> s = getSurface(env, surface);
+    if (s == nullptr) {
+        return BAD_VALUE;
+    }
+    status_t err = connectSurface(s, CAMERA_DEVICE_BUFFER_SLACK);
+    if (err == NO_ERROR) {
+        err = native_window_set_buffers_dimensions(s.get(), width, height);
+    }
+    if (err == NO_ERROR) {
+        err = native_window_set_buffers_format(s.get(), HAL_PIXEL_FORMAT_YCbCr_420_888);
+    }
+    if (err != NO_ERROR) {
+        ALOGE("%s: unable to configure encoder surface: %s (%d)", __FUNCTION__,
+                strerror(-err), err);
+        native_window_api_disconnect(s.get(), NATIVE_WINDOW_API_CAMERA);
+        OVERRIDE_SURFACE_ERROR(err);
+        return err;
+    }
+    s->setDequeueTimeout(RecordingStreamBridge::dequeueTimeoutNs());
+
+    sp<RecordingStreamBridge> bridge = new RecordingStreamBridge(s, static_cast<uint32_t>(width),
+            static_cast<uint32_t>(height));
+    sp<CameraRecordingFrameSink> previous;
+    sp<Camera> c = android_hardware_Camera_setRecordingFrameSink(env, camera, bridge, &previous);
+    if (c == nullptr) {
+        native_window_api_disconnect(s.get(), NATIVE_WINDOW_API_CAMERA);
+        return NO_INIT;
+    }
+    err = c->setVideoBufferMode(hardware::ICamera::VIDEO_BUFFER_MODE_DATA_CALLBACK_YUV);
+    if (err == NO_ERROR) {
+        err = c->startRecording();
+    }
+    if (err != NO_ERROR) {
+        ALOGE("%s: unable to start the recording stream: %s (%d)", __FUNCTION__,
+                strerror(-err), err);
+        android_hardware_Camera_setRecordingFrameSink(env, camera, previous, nullptr);
+        bridge->deactivate();
+        native_window_api_disconnect(s.get(), NATIVE_WINDOW_API_CAMERA);
+        return err;
+    }
+    ALOGI("%s: %dx%d recording stream feeds the encoder surface", __FUNCTION__, width, height);
+    return NO_ERROR;
+}
+
+static jint LegacyCameraDevice_nativeStopRecordingStream(JNIEnv* env, jobject thiz,
+        jobject camera, jobject surface) {
+    ALOGV("nativeStopRecordingStream");
+    sp<CameraRecordingFrameSink> previous;
+    sp<Camera> c = android_hardware_Camera_setRecordingFrameSink(env, camera, nullptr, &previous);
+    if (c == nullptr) {
+        return NO_INIT;
+    }
+    c->stopRecording();
+    if (previous != nullptr) {
+        previous->deactivate();
+    }
+    sp<ANativeWindow> anw = getNativeWindow(env, surface);
+    if (anw != nullptr) {
+        native_window_api_disconnect(anw.get(), NATIVE_WINDOW_API_CAMERA);
+    }
+    return NO_ERROR;
+}
+
 static jint LegacyCameraDevice_nativeGetJpegFooterSize(JNIEnv* env, jobject thiz) {
     ALOGV("nativeGetJpegFooterSize");
     return static_cast<jint>(sizeof(struct camera3_jpeg_blob));
@@ -701,6 +906,12 @@ static const JNINativeMethod gCameraDeviceMethods[] = {
     { "nativeDisconnectSurface",
     "(Landroid/view/Surface;)I",
     (void *)LegacyCameraDevice_nativeDisconnectSurface },
+    { "nativeStartRecordingStream",
+    "(Landroid/hardware/Camera;Landroid/view/Surface;II)I",
+    (void *)LegacyCameraDevice_nativeStartRecordingStream },
+    { "nativeStopRecordingStream",
+    "(Landroid/hardware/Camera;Landroid/view/Surface;)I",
+    (void *)LegacyCameraDevice_nativeStopRecordingStream },
 };
 
 // Get all the required offsets in java class and register native functions
