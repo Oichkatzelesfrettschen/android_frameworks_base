@@ -20,7 +20,9 @@ import static android.companion.virtual.VirtualDeviceParams.DEVICE_POLICY_DEFAUL
 import static android.companion.virtual.VirtualDeviceParams.POLICY_TYPE_CAMERA;
 import static android.content.Context.DEVICE_ID_DEFAULT;
 import static android.system.OsConstants.EACCES;
+import static android.system.OsConstants.EBUSY;
 import static android.system.OsConstants.ENODEV;
+import static android.system.OsConstants.EUSERS;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -631,7 +633,7 @@ public class Camera {
         Objects.requireNonNull(context);
         final int err = cameraInit(cameraId, context, rotationOverride);
         if (checkInitErrors(err)) {
-            if (err == -EACCES) {
+            if (err == -EACCES || err == -EBUSY || err == -EUSERS) {
                 throw new RuntimeException("Fail to connect to camera service");
             } else if (err == -ENODEV) {
                 throw new RuntimeException("Camera initialization failed");
