@@ -798,12 +798,15 @@ public class ParameterUtils {
         float reportedZoomRatio = 1.0f;
         if (params.isZoomSupported()) {
             List<Integer> zoomRatios = params.getZoomRatios();
+            // zoom-ratios holds hundredths; rounding keeps a requested ratio such as 1.17f, whose
+            // float product with 100 falls just below 117, on its own table entry.
+            int requestedHundredths = Math.round(zoomRatio * ZOOM_RATIO_MULTIPLIER);
             for (int i = 1; i < zoomRatios.size(); i++) {
-                if (zoomRatio * ZOOM_RATIO_MULTIPLIER >= zoomRatios.get(i)) {
+                if (requestedHundredths >= zoomRatios.get(i)) {
                     bestZoomIndex = i;
                     reportedCropRegion = availableReportedCropRegions.get(i);
                     previewCropRegion = availablePreviewCropRegions.get(i);
-                    reportedZoomRatio = zoomRatios.get(i);
+                    reportedZoomRatio = zoomRatios.get(i) * 1.0f / ZOOM_RATIO_MULTIPLIER;
                 } else {
                     break;
                 }
@@ -818,8 +821,8 @@ public class ParameterUtils {
                     ", reported zoom ratio = " + reportedZoomRatio);
         }
 
-        return new ZoomData(bestZoomIndex, reportedCropRegion,
-                previewCropRegion, reportedZoomRatio);
+        return new ZoomData(bestZoomIndex, previewCropRegion,
+                reportedCropRegion, reportedZoomRatio);
     }
 
     /**
