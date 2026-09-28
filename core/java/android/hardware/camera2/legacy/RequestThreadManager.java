@@ -119,6 +119,15 @@ public class RequestThreadManager {
      */
     private static final String RECORD_STREAM_PROPERTY = "debug.camera.legacy_record_stream";
 
+    /*
+     * The HTC HAL1 recomputes its fps range for the 30 fps video mode when video-mode 2 is set
+     * while preview is stopped, and keeps the 60 fps range of video-mode 2 when the key changes
+     * on a running preview. A request that introduces video-mode 2 before preview runs starts
+     * preview without it and applies it afterwards.
+     */
+    private static final String HTC_VIDEO_MODE_KEY = "video-mode";
+    private static final String HTC_VIDEO_MODE_HFR = "2";
+
     // Video encoder output fed by the HAL1 recording stream, or null.
     private Surface mRecordOutput;
     private Size mRecordOutputSize;
@@ -893,6 +902,7 @@ public class RequestThreadManager {
                         CaptureRequest request = holder.getRequest();
 
                         boolean paramsChanged = false;
+                        Camera.Parameters deferredVideoModeParams = null;
 
                         // Only update parameters if the request has changed
                         if (mLastRequest == null || mLastRequest.captureRequest != request) {
@@ -911,7 +921,16 @@ public class RequestThreadManager {
                             // If the parameters have changed, set them in the Camera1 API.
                             if (!mParams.same(legacyRequest.parameters)) {
                                 try {
-                                    mCamera.setParameters(legacyRequest.parameters);
+                                    Camera.Parameters applied = legacyRequest.parameters;
+                                    if (!mPreviewRunning && holder.hasPreviewTargets()
+                                            && HTC_VIDEO_MODE_HFR.equals(
+                                                    applied.get(HTC_VIDEO_MODE_KEY))) {
+                                        deferredVideoModeParams = applied;
+                                        applied = Camera.getEmptyParameters();
+                                        applied.unflatten(deferredVideoModeParams.flatten());
+                                        applied.remove(HTC_VIDEO_MODE_KEY);
+                                    }
+                                    mCamera.setParameters(applied);
                                 } catch (RuntimeException e) {
                                     // If setting the parameters failed, report a request error to
                                     // the camera client, and skip any further work for this request
@@ -947,6 +966,9 @@ public class RequestThreadManager {
                             // face detection or auto focus
                             if (holder.hasPreviewTargets()) {
                                 doPreviewCapture(holder);
+                                if (deferredVideoModeParams != null) {
+                                    mCamera.setParameters(deferredVideoModeParams);
+                                }
                                 updateRecordStream(holder, burstHolder.isRepeating());
                             }
                             if (holder.hasJpegTargets()) {
