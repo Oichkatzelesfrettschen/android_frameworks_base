@@ -236,6 +236,8 @@ public class RequestThreadManager {
     private final Object mStillExifLock = new Object();
     private RequestHolder mStillExifHolder;
     private LegacyResultMapper.StillExif mStillExif;
+    // Largest gain the HAL1 applies, from its iso-values list; 0 when unknown.
+    private int mSensitivityCeiling;
 
     /**
      * Applies the EXIF sensor values of the JPEG {@code holder} produced to its
@@ -253,7 +255,7 @@ public class RequestThreadManager {
             mStillExif = null;
         }
         if (exif != null) {
-            exif.apply(result, mCharacteristics);
+            exif.apply(result, mCharacteristics, mSensitivityCeiling);
         }
     }
 
@@ -550,6 +552,7 @@ public class RequestThreadManager {
                 CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE);
             return;
         }
+        mSensitivityCeiling = LegacyResultMapper.StillExif.sensitivityCeiling(mParams);
 
         if (mRecordOutput != null) {
             /*

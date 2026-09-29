@@ -92,15 +92,49 @@ public class LegacyResultMapper {
         }
 
         /**
+         * Returns the largest numeric entry of the HAL1 {@code iso-values} list
+         * ({@code ISO100} through {@code ISO1600} and the like), or 0 when the
+         * list is absent or carries no numeric entry.
+         */
+        static int sensitivityCeiling(Camera.Parameters params) {
+            String values = params == null ? null : params.get("iso-values");
+            if (values == null) {
+                return 0;
+            }
+            int ceiling = 0;
+            for (String v : values.split(",")) {
+                v = v.trim();
+                if (!v.startsWith("ISO")) {
+                    continue;
+                }
+                try {
+                    ceiling = Math.max(ceiling, Integer.parseInt(v.substring(3)));
+                } catch (NumberFormatException e) {
+                    // Named modes such as ISO_HJR carry no gain value.
+                }
+            }
+            return ceiling;
+        }
+
+        /**
          * Sets sensor.exposureTime, sensor.sensitivity and, on a camera with a
          * flash unit, flash.state from the EXIF values that are present.
+         *
+         * <p>The HTC HAL1 writes the requested or auto-exposure ISO to EXIF,
+         * above the largest {@code iso-values} entry, while the sensor applies
+         * at most that entry's gain; {@code sensitivityCeiling} (0 for none)
+         * caps the reported sensitivity at the applied gain.
+         * htc-workbench evidence/camera-dark-frame-read-noise-107-20260928
+         * carries the measurement.</p>
          */
-        void apply(CameraMetadataNative result, CameraCharacteristics characteristics) {
+        void apply(CameraMetadataNative result, CameraCharacteristics characteristics,
+                int sensitivityCeiling) {
             if (mExposureTimeNs > 0) {
                 result.set(SENSOR_EXPOSURE_TIME, mExposureTimeNs);
             }
             if (mSensitivity > 0) {
-                result.set(SENSOR_SENSITIVITY, mSensitivity);
+                result.set(SENSOR_SENSITIVITY, sensitivityCeiling > 0
+                        ? Math.min(mSensitivity, sensitivityCeiling) : mSensitivity);
             }
             // EXIF Flash bit 0 records whether the flash fired for this frame.
             if (mFlash >= 0 && Boolean.TRUE.equals(
