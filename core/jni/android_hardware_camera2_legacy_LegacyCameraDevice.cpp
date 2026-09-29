@@ -41,6 +41,9 @@
 
 #include <stdint.h>
 #include <inttypes.h>
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 using namespace android;
 
@@ -442,14 +445,40 @@ static sp<Surface> getSurface(JNIEnv* env, jobject surface) {
     return s;
 }
 
+// Reverses each two-byte pair of an interleaved chroma row, turning CbCr into
+// CrCb, 64 bytes per NEON iteration.
+static void swapRecordingChromaRow(uint8_t* dst, const uint8_t* src, size_t n) {
+    size_t i = 0;
+#if defined(__ARM_NEON)
+    for (; i + 64 <= n; i += 64) {
+        uint8x16_t a = vrev16q_u8(vld1q_u8(src + i));
+        uint8x16_t b = vrev16q_u8(vld1q_u8(src + i + 16));
+        uint8x16_t c = vrev16q_u8(vld1q_u8(src + i + 32));
+        uint8x16_t d = vrev16q_u8(vld1q_u8(src + i + 48));
+        vst1q_u8(dst + i, a);
+        vst1q_u8(dst + i + 16, b);
+        vst1q_u8(dst + i + 32, c);
+        vst1q_u8(dst + i + 48, d);
+    }
+    for (; i + 16 <= n; i += 16) {
+        vst1q_u8(dst + i, vrev16q_u8(vld1q_u8(src + i)));
+    }
+#endif
+    for (; i + 1 < n; i += 2) {
+        dst[i] = src[i + 1];
+        dst[i + 1] = src[i];
+    }
+}
+
 /*
- * Copies the HAL1 recording stream into a video encoder input surface.
+ * Copies the HAL1 recording stream into a video encoder or GL texture surface.
  *
  * With VIDEO_BUFFER_MODE_DATA_CALLBACK_YUV the HAL delivers each recording
  * frame as NV12 pixels in shared memory, laid out as the Venus encoder input
  * (Y stride aligned to 128, Y scanlines to 32, chroma scanlines to 16, chroma
  * after the padded luma plane), or tightly packed. Each frame is copied row by
- * row into a buffer dequeued from the encoder surface, stamped with the HAL
+ * row into a buffer dequeued from the surface, the chroma pairs reversed for
+ * an NV21 texture target, stamped with the HAL
  * timestamp, and returned to the HAL before onRecordingFrame returns, so the
  * HAL's fixed video buffer pool never waits on the encoder. A frame that finds
  * no free encoder buffer within kDequeueTimeoutNs is dropped.
@@ -534,10 +563,15 @@ private:
         const uint8_t* srcC = src + srcChromaOffset;
         uint8_t* dstCb = static_cast<uint8_t*>(ycbcr.cb);
         uint8_t* dstCr = static_cast<uint8_t*>(ycbcr.cr);
+        const size_t chromaBytes = mWidth & ~1u;
         for (size_t row = 0; row < chromaRows; row++) {
             const uint8_t* in = srcC + row * srcYStride;
             if (ycbcr.chroma_step == 2 && dstCr == dstCb + 1) {
-                memcpy(dstCb + row * ycbcr.cstride, in, mWidth & ~1u);
+                memcpy(dstCb + row * ycbcr.cstride, in, chromaBytes);
+                continue;
+            }
+            if (ycbcr.chroma_step == 2 && dstCb == dstCr + 1) {
+                swapRecordingChromaRow(dstCr + row * ycbcr.cstride, in, chromaBytes);
                 continue;
             }
             uint8_t* cb = dstCb + row * ycbcr.cstride;
