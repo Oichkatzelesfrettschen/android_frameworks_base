@@ -45,6 +45,7 @@ public class GLThreadManager {
     private static final int MSG_ALLOW_FRAMES = 5;
     private static final int MSG_NEW_RECORD_FRAME = 6;
     private static final int MSG_SET_RECORD_SOURCE = 7;
+    private static final int MSG_CLEAR_UNPAIRED_TARGETS = 8;
 
     private CaptureCollector mCaptureCollector;
 
@@ -111,6 +112,9 @@ public class GLThreadManager {
                         break;
                     case MSG_SET_RECORD_SOURCE:
                         mTextureRenderer.setRecordSource(msg.arg1 != 0);
+                        break;
+                    case MSG_CLEAR_UNPAIRED_TARGETS:
+                        mTextureRenderer.clearUnpairedTargets();
                         break;
                     case MSG_CLEANUP:
                         mTextureRenderer.cleanupEGLContext();
@@ -229,6 +233,14 @@ public class GLThreadManager {
         Handler handler = mGLHandlerThread.getHandler();
         handler.sendMessage(handler.obtainMessage(MSG_SET_RECORD_SOURCE, record ? 1 : 0,
                 /*arg2*/0));
+    }
+
+    /**
+     * End unpaired recording-frame draws until the next frame pairs with a request, in order
+     * with queued frames.
+     */
+    public void clearUnpairedTargets() {
+        mGLHandlerThread.getHandler().sendEmptyMessage(MSG_CLEAR_UNPAIRED_TARGETS);
     }
 
     /**

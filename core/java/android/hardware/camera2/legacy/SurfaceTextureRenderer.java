@@ -96,11 +96,17 @@ public class SurfaceTextureRenderer {
      */
     private static final long RECORD_STALL_NS = 250000000L; // 250 ms
     /*
-     * An unpaired recording frame draws only within this interval after the last paired one,
-     * which spans the gap between requests of a repeating burst and ends the draws once the
-     * client stops submitting requests.
+     * An unpaired recording frame draws only within this interval after the last paired one.
+     * The request thread pairs a frame per request it completes, which can be several
+     * recording frames apart, so the interval spans that gap; the request thread clears the
+     * targets through clearUnpairedTargets when its queue runs empty, so the interval only
+     * bounds the draws while in-flight requests of a cancelled burst drain.
      */
-    private static final long UNPAIRED_DRAW_WINDOW_NS = 100000000L; // 100 ms
+    private static final long UNPAIRED_DRAW_WINDOW_NS = 250000000L; // 250 ms
+    // Recording-source frames since the source was last selected, logged when it changes.
+    private int mPairedRecordFrames = 0;
+    private int mUnpairedRecordFrames = 0;
+    private int mDroppedRecordFrames = 0;
 
     private static final int FLOAT_SIZE_BYTES = 4;
     private static final int TRIANGLE_VERTICES_DATA_STRIDE_BYTES = 5 * FLOAT_SIZE_BYTES;
@@ -441,8 +447,29 @@ public class SurfaceTextureRenderer {
             mRecordSurfaceTexture.release();
         }
         mRecordSurfaceTexture = null;
+        logRecordFrameCounts();
         mRecordSource = false;
         mLastTargetSurfaceIds = new ArrayList<>();
+    }
+
+    /**
+     * Stop drawing unpaired recording frames until the next paired one; the request thread
+     * calls this when no request remains queued or in flight.
+     */
+    public void clearUnpairedTargets() {
+        mLastTargetSurfaceIds = new ArrayList<>();
+    }
+
+    private void logRecordFrameCounts() {
+        if (mPairedRecordFrames + mUnpairedRecordFrames + mDroppedRecordFrames == 0) {
+            return;
+        }
+        Log.i(TAG, "Recording source: " + mPairedRecordFrames + " paired, "
+                + mUnpairedRecordFrames + " unpaired, " + mDroppedRecordFrames
+                + " dropped with no request to draw for");
+        mPairedRecordFrames = 0;
+        mUnpairedRecordFrames = 0;
+        mDroppedRecordFrames = 0;
     }
 
     private void configureEGLContext() {
@@ -657,6 +684,7 @@ public class SurfaceTextureRenderer {
      * {@code record} is true, the preview texture otherwise.
      */
     public void setRecordSource(boolean record) {
+        logRecordFrameCounts();
         mRecordSource = record;
         mLastTargetSurfaceIds = new ArrayList<>();
         mLastPairedTimestamp = 0;
@@ -783,7 +811,11 @@ public class SurfaceTextureRenderer {
                     && timestamp - mLastPairedTimestamp < UNPAIRED_DRAW_WINDOW_NS) {
                 drawTargets(st, textureId, mLastTargetSurfaceIds, timestamp, /*request*/null,
                         /*includeConversions*/false);
+                mUnpairedRecordFrames++;
                 return;
+            }
+            if (recordFrame) {
+                mDroppedRecordFrames++;
             }
             if (DEBUG) {
                 Log.d(TAG, "Dropping preview frame.");
@@ -808,6 +840,7 @@ public class SurfaceTextureRenderer {
         if (recordFrame) {
             mLastTargetSurfaceIds = targetSurfaceIds;
             mLastPairedTimestamp = timestamp;
+            mPairedRecordFrames++;
         }
         targetCollector.previewProduced();
 
