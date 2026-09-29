@@ -143,6 +143,8 @@ public class RequestThreadManager {
     private Surface mRecordTextureSurface;
     private Size mGlRecordSize;
     private boolean mGlRecordStreamRunning = false;
+    // Set when a start fails, until the next configureOutputs.
+    private boolean mGlRecordStreamFailed = false;
 
     /**
      * Container object for Configure messages.
@@ -464,7 +466,7 @@ public class RequestThreadManager {
      * video-mode 2.
      */
     private void updateGlRecordStream(RequestHolder holder, boolean repeating) {
-        if (mRecordOutput != null || mRecordTextureSurface == null) {
+        if (mRecordOutput != null || mRecordTextureSurface == null || mGlRecordStreamFailed) {
             return;
         }
         boolean active = LegacyRequestMapper.isHtcVideo60Active(mParams);
@@ -475,8 +477,10 @@ public class RequestThreadManager {
                 mGlRecordStreamRunning = true;
                 mGLThreadManager.setRecordSource(true);
                 Log.i(TAG, "Recording stream feeds the GL outputs at " + mGlRecordSize);
-            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
-                Log.w(TAG, "Recording texture abandoned, GL outputs stay on preview", e);
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException | RuntimeException e) {
+                // The GL outputs stay on the preview stream at its rate.
+                Log.w(TAG, "Recording stream unavailable for the GL outputs", e);
+                mGlRecordStreamFailed = true;
             }
         } else if (!active && mGlRecordStreamRunning && repeating) {
             stopGlRecordStream();
@@ -493,8 +497,8 @@ public class RequestThreadManager {
         }
         try {
             LegacyCameraDevice.stopRecordingStream(mCamera, mRecordTextureSurface);
-        } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
-            Log.w(TAG, "Recording texture abandoned while stopping the recording stream", e);
+        } catch (LegacyExceptionUtils.BufferQueueAbandonedException | RuntimeException e) {
+            Log.w(TAG, "Recording stream stop failed for the GL outputs", e);
         }
     }
 
@@ -592,6 +596,7 @@ public class RequestThreadManager {
         mRecordTextureSurface = null;
         mRecordTexture = null;
         mGlRecordSize = null;
+        mGlRecordStreamFailed = false;
 
         List<Size> previewOutputSizes = new ArrayList<>();
         List<Size> callbackOutputSizes = new ArrayList<>();
@@ -1260,7 +1265,15 @@ public class RequestThreadManager {
                                 CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE);
                     }
                     if (mCamera != null) {
-                        stopRecordStream();
+                        try {
+                            stopRecordStream();
+                        } catch (RuntimeException e) {
+                            Log.e(TAG, "Recording stream stop failed during cleanup", e);
+                        }
+                    }
+                    if (mRecordTextureSurface != null) {
+                        mRecordTextureSurface.release();
+                        mRecordTextureSurface = null;
                     }
                     if (mGLThreadManager != null) {
                         mGLThreadManager.quit();

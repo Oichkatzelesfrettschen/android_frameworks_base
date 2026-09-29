@@ -88,6 +88,13 @@ public class SurfaceTextureRenderer {
     private boolean mRecordSource = false;
     private List<Long> mLastTargetSurfaceIds = new ArrayList<>();
     private long mLastPairedTimestamp = 0;
+    private long mLastRecordArrivalNs = 0;
+    /*
+     * A preview frame that arrives this long after the last recording frame, or after the
+     * switch to the recording source, returns the draw source to preview, so outputs and
+     * requests keep flowing when the HAL delivers no recording frames.
+     */
+    private static final long RECORD_STALL_NS = 250000000L; // 250 ms
     /*
      * An unpaired recording frame draws only within this interval after the last paired one,
      * which spans the gap between requests of a repeating burst and ends the draws once the
@@ -653,6 +660,7 @@ public class SurfaceTextureRenderer {
         mRecordSource = record;
         mLastTargetSurfaceIds = new ArrayList<>();
         mLastPairedTimestamp = 0;
+        mLastRecordArrivalNs = System.nanoTime();
     }
 
     /**
@@ -752,6 +760,14 @@ public class SurfaceTextureRenderer {
             return;
         }
         st.updateTexImage();
+        if (recordFrame) {
+            mLastRecordArrivalNs = System.nanoTime();
+        } else if (mRecordSource
+                && System.nanoTime() - mLastRecordArrivalNs > RECORD_STALL_NS) {
+            Log.w(TAG, "No recording frame for " + RECORD_STALL_NS / 1000000
+                    + " ms, drawing from preview");
+            setRecordSource(false);
+        }
         if (recordFrame != mRecordSource) {
             return;
         }
@@ -765,7 +781,8 @@ public class SurfaceTextureRenderer {
         if (captureHolder == null) {
             if (recordFrame && !mLastTargetSurfaceIds.isEmpty()
                     && timestamp - mLastPairedTimestamp < UNPAIRED_DRAW_WINDOW_NS) {
-                drawTargets(st, textureId, mLastTargetSurfaceIds, timestamp, /*request*/null);
+                drawTargets(st, textureId, mLastTargetSurfaceIds, timestamp, /*request*/null,
+                        /*includeConversions*/false);
                 return;
             }
             if (DEBUG) {
@@ -786,7 +803,8 @@ public class SurfaceTextureRenderer {
             request.setOutputAbandoned();
         }
 
-        drawTargets(st, textureId, targetSurfaceIds, captureHolder.second, request);
+        drawTargets(st, textureId, targetSurfaceIds, captureHolder.second, request,
+                /*includeConversions*/true);
         if (recordFrame) {
             mLastTargetSurfaceIds = targetSurfaceIds;
             mLastPairedTimestamp = timestamp;
@@ -798,10 +816,12 @@ public class SurfaceTextureRenderer {
     /**
      * Draw the current buffer of {@code st} into each configured output in
      * {@code targetSurfaceIds}, stamped with {@code timestamp}. An abandoned output marks
-     * {@code request} when there is one.
+     * {@code request} when there is one. Outputs that need a {@code glReadPixels} conversion
+     * are drawn only when {@code includeConversions} is set, which keeps their CPU readback
+     * at the request rate.
      */
     private void drawTargets(SurfaceTexture st, int textureId, List<Long> targetSurfaceIds,
-            long timestamp, RequestHolder request) {
+            long timestamp, RequestHolder request, boolean includeConversions) {
         for (EGLSurfaceHolder holder : mSurfaces) {
             if (LegacyCameraDevice.containsSurfaceId(holder.surface, targetSurfaceIds)) {
                 try{
@@ -823,7 +843,8 @@ public class SurfaceTextureRenderer {
             }
         }
         for (EGLSurfaceHolder holder : mConversionSurfaces) {
-            if (LegacyCameraDevice.containsSurfaceId(holder.surface, targetSurfaceIds)) {
+            if (includeConversions
+                    && LegacyCameraDevice.containsSurfaceId(holder.surface, targetSurfaceIds)) {
                 // glReadPixels reads from the bottom of the buffer, so add an extra vertical flip
                 try {
                     makeCurrent(holder.eglSurface);
