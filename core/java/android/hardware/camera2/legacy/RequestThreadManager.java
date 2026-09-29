@@ -231,6 +231,32 @@ public class RequestThreadManager {
 
     private final ConditionVariable mReceivedJpeg = new ConditionVariable(false);
 
+    // The JPEG callback thread records the EXIF of the still it delivered; the
+    // request thread applies it to that request's result.
+    private final Object mStillExifLock = new Object();
+    private RequestHolder mStillExifHolder;
+    private LegacyResultMapper.StillExif mStillExif;
+
+    /**
+     * Applies the EXIF sensor values of the JPEG {@code holder} produced to its
+     * result. The values go onto the per-request copy, so the result mapper's
+     * cache never carries one still's exposure into a later request.
+     */
+    private void applyStillExif(RequestHolder holder, CameraMetadataNative result) {
+        LegacyResultMapper.StillExif exif;
+        synchronized (mStillExifLock) {
+            if (mStillExifHolder != holder) {
+                return;
+            }
+            exif = mStillExif;
+            mStillExifHolder = null;
+            mStillExif = null;
+        }
+        if (exif != null) {
+            exif.apply(result, mCharacteristics);
+        }
+    }
+
     private final Camera.PictureCallback mJpegCallback = new Camera.PictureCallback() {
         @Override
         public void onPictureTaken(byte[] data, Camera camera) {
@@ -242,6 +268,11 @@ public class RequestThreadManager {
             }
             RequestHolder holder = captureInfo.first;
             long timestamp = captureInfo.second;
+            LegacyResultMapper.StillExif exif = LegacyResultMapper.StillExif.parse(data);
+            synchronized (mStillExifLock) {
+                mStillExifHolder = holder;
+                mStillExif = exif;
+            }
             for (Surface s : holder.getHolderTargets()) {
                 try {
                     if (LegacyCameraDevice.containsSurfaceId(s, mJpegSurfaceIds)) {
@@ -1062,6 +1093,7 @@ public class RequestThreadManager {
                          * mapper with their own values.
                          */
 
+                        applyStillExif(holder, result);
                         // Update AF state
                         mFocusStateMapper.mapResultTriggers(result);
                         // Update face-related results

@@ -676,6 +676,12 @@ public class LegacyRequestMapper {
                 && "true".equals(params.get(KEY_HTC_VIDEO_60FPS_SUPPORTED));
     }
 
+    /** Whether the parameters select the HTC 60 fps video mode. */
+    static boolean isHtcVideo60Active(Camera.Parameters params) {
+        return HTC_VIDEO_MODE_60FPS.equals(params.get(KEY_HTC_VIDEO_MODE))
+                && "true".equals(params.get(KEY_HTC_VIDEO_60FPS_SUPPORTED));
+    }
+
     /**
      * Enter or leave the HTC 60 fps video mode. The HAL echoes "video-mode"
      * only while the mode is 2, so the key is written when entering the mode
