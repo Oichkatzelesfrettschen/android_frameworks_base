@@ -60,6 +60,16 @@ public class LegacyRequestMapper {
     static final int HTC_VIDEO_60FPS = 60;
 
     /**
+     * The HTC HAL1 lists no fixed 24 fps preview range, but its
+     * setPreviewFpsRange replaces any range with [N, N] while
+     * persist.debug.set.fixedfps holds N, and the M8 camera wrapper holds N
+     * for a recording-hint camera that asks for a fixed [N, N] range. A fixed
+     * 24 fps request therefore passes through as preview-fps-range
+     * 24000,24000 whenever an advertised range covers 24 fps.
+     */
+    static final int HTC_FIXED_24FPS = 24;
+
+    /**
      * HTC HAL1 cameras record HDR video in hardware under the private
      * "video-hdr" key: the Yushan II (ST ILP0100) companion ISP switches to its
      * HDR mode and the OV4688 to its HDR sensor mode. The "hdr" scene mode is
@@ -200,6 +210,10 @@ public class LegacyRequestMapper {
             if (rangeToApply != null) {
                 params.setPreviewFpsRange(rangeToApply[Camera.Parameters.PREVIEW_FPS_MIN_INDEX],
                         rangeToApply[Camera.Parameters.PREVIEW_FPS_MAX_INDEX]);
+            } else if (aeFpsRange.getLower() == HTC_FIXED_24FPS
+                    && aeFpsRange.getUpper() == HTC_FIXED_24FPS && isHtcFixed24Supported(params)) {
+                params.setPreviewFpsRange(legacyFps[Camera.Parameters.PREVIEW_FPS_MIN_INDEX],
+                        legacyFps[Camera.Parameters.PREVIEW_FPS_MAX_INDEX]);
             } else {
                 Log.w(TAG, "Unsupported FPS range set [" + legacyFps[0] + "," + legacyFps[1] + "]");
             }
@@ -674,6 +688,28 @@ public class LegacyRequestMapper {
     private static boolean isHtcVideo60Request(Camera.Parameters params, Range<Integer> range) {
         return range.getLower() == HTC_VIDEO_60FPS && range.getUpper() == HTC_VIDEO_60FPS
                 && "true".equals(params.get(KEY_HTC_VIDEO_60FPS_SUPPORTED));
+    }
+
+    /**
+     * Whether a fixed [24,24] range is available: an HTC HAL (it advertises
+     * the 60 fps video mode) with a preview fps range that covers 24 fps.
+     */
+    static boolean isHtcFixed24Supported(Camera.Parameters params) {
+        if (!"true".equals(params.get(KEY_HTC_VIDEO_60FPS_SUPPORTED))) {
+            return false;
+        }
+        List<int[]> ranges = params.getSupportedPreviewFpsRange();
+        if (ranges == null) {
+            return false;
+        }
+        final int fps = HTC_FIXED_24FPS * 1000;
+        for (int[] r : ranges) {
+            if (r[Camera.Parameters.PREVIEW_FPS_MIN_INDEX] <= fps
+                    && r[Camera.Parameters.PREVIEW_FPS_MAX_INDEX] >= fps) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether the parameters select the HTC 60 fps video mode. */

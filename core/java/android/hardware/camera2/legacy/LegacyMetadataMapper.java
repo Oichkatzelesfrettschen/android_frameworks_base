@@ -423,12 +423,20 @@ public class LegacyMetadataMapper {
             // LegacyRequestMapper selects it for a [60,60] request.
             boolean htcVideo60 = "true".equals(
                     p.get(LegacyRequestMapper.KEY_HTC_VIDEO_60FPS_SUPPORTED));
-            Range<Integer>[] ranges = new Range[rangesSize + (htcVideo60 ? 1 : 0)];
+            // LegacyRequestMapper passes a fixed [24,24] through to the HAL,
+            // which the camera wrapper pins while recording.
+            boolean htcFixed24 = LegacyRequestMapper.isHtcFixed24Supported(p);
+            Range<Integer>[] ranges =
+                    new Range[rangesSize + (htcVideo60 ? 1 : 0) + (htcFixed24 ? 1 : 0)];
             int i = 0;
             for (int[] r : fpsRanges) {
                 ranges[i++] = Range.create(
                         (int) Math.floor(r[Camera.Parameters.PREVIEW_FPS_MIN_INDEX] / 1000.0),
                         (int) Math.ceil(r[Camera.Parameters.PREVIEW_FPS_MAX_INDEX] / 1000.0));
+            }
+            if (htcFixed24) {
+                ranges[i++] = Range.create(LegacyRequestMapper.HTC_FIXED_24FPS,
+                        LegacyRequestMapper.HTC_FIXED_24FPS);
             }
             if (htcVideo60) {
                 ranges[i++] = Range.create(LegacyRequestMapper.HTC_VIDEO_60FPS,
