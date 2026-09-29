@@ -27,9 +27,13 @@ import android.hardware.camera2.legacy.ParameterUtils.ZoomData;
 import android.hardware.camera2.params.MeteringRectangle;
 import android.hardware.camera2.utils.ListUtils;
 import android.hardware.camera2.utils.ParamsUtils;
+import android.media.ExifInterface;
 import android.util.Log;
+import android.util.Range;
 import android.util.Size;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -45,6 +49,66 @@ public class LegacyResultMapper {
 
     private LegacyRequest mCachedRequest = null;
     private CameraMetadataNative mCachedResult = null;
+
+    /**
+     * Sensor values recorded in the EXIF of one HAL1 JPEG.
+     *
+     * <p>HAL1 reports per-capture exposure time, sensitivity and flash firing
+     * only inside the encoded picture, so these keys appear on the result of
+     * the still request that produced it and on no preview result.</p>
+     */
+    static final class StillExif {
+        private final long mExposureTimeNs;
+        private final int mSensitivity;
+        private final int mFlash;
+
+        private StillExif(long exposureTimeNs, int sensitivity, int flash) {
+            mExposureTimeNs = exposureTimeNs;
+            mSensitivity = sensitivity;
+            mFlash = flash;
+        }
+
+        /**
+         * Reads ExposureTime, ISOSpeedRatings and Flash from a JPEG.
+         *
+         * @return the parsed values, or {@code null} when the payload carries
+         *         no readable EXIF
+         */
+        static StillExif parse(byte[] jpeg) {
+            if (jpeg == null) {
+                return null;
+            }
+            try {
+                ExifInterface exif = new ExifInterface(new ByteArrayInputStream(jpeg));
+                double seconds = exif.getAttributeDouble(ExifInterface.TAG_EXPOSURE_TIME, -1);
+                long exposureNs = seconds > 0 ? Math.round(seconds * 1e9) : -1;
+                int iso = exif.getAttributeInt(ExifInterface.TAG_ISO_SPEED_RATINGS, -1);
+                int flash = exif.getAttributeInt(ExifInterface.TAG_FLASH, -1);
+                return new StillExif(exposureNs, iso, flash);
+            } catch (IOException | RuntimeException e) {
+                Log.w(TAG, "No readable EXIF in still capture", e);
+                return null;
+            }
+        }
+
+        /**
+         * Sets sensor.exposureTime, sensor.sensitivity and, on a camera with a
+         * flash unit, flash.state from the EXIF values that are present.
+         */
+        void apply(CameraMetadataNative result, CameraCharacteristics characteristics) {
+            if (mExposureTimeNs > 0) {
+                result.set(SENSOR_EXPOSURE_TIME, mExposureTimeNs);
+            }
+            if (mSensitivity > 0) {
+                result.set(SENSOR_SENSITIVITY, mSensitivity);
+            }
+            // EXIF Flash bit 0 records whether the flash fired for this frame.
+            if (mFlash >= 0 && Boolean.TRUE.equals(
+                    characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE))) {
+                result.set(FLASH_STATE, (mFlash & 1) != 0 ? FLASH_STATE_FIRED : FLASH_STATE_READY);
+            }
+        }
+    }
 
     /**
      * Generate capture result metadata from the legacy camera request.
@@ -331,6 +395,22 @@ public class LegacyResultMapper {
             // Lie to pass CTS temporarily.
             // TODO: Implement precapture trigger, after which we can report CONVERGED ourselves
             m.set(CONTROL_AE_STATE, CONTROL_AE_STATE_CONVERGED);
+        }
+
+        // control.aeTargetFpsRange, rounded as control.aeAvailableTargetFpsRanges is
+        {
+            Range<Integer> fpsRange;
+            if (LegacyRequestMapper.isHtcVideo60Active(p)) {
+                fpsRange = Range.create(LegacyRequestMapper.HTC_VIDEO_60FPS,
+                        LegacyRequestMapper.HTC_VIDEO_60FPS);
+            } else {
+                int[] fps = new int[2];
+                p.getPreviewFpsRange(fps);
+                fpsRange = Range.create(
+                        (int) Math.floor(fps[Camera.Parameters.PREVIEW_FPS_MIN_INDEX] / 1000.0),
+                        (int) Math.ceil(fps[Camera.Parameters.PREVIEW_FPS_MAX_INDEX] / 1000.0));
+            }
+            m.set(CONTROL_AE_TARGET_FPS_RANGE, fpsRange);
         }
 
         // control.aeRegions
