@@ -133,6 +133,17 @@ public class RequestThreadManager {
     private Size mRecordOutputSize;
     private boolean mRecordStreamRunning = false;
 
+    /*
+     * With no encoder output, video-mode 2 feeds the GL renderer's second input texture from
+     * the recording stream, so GL outputs (a CameraX surface processor, a preview) receive the
+     * recording rate. The texture's default buffer size is the video size, which drawFrame
+     * reads as the intermediate size when it letterboxes.
+     */
+    private SurfaceTexture mRecordTexture;
+    private Surface mRecordTextureSurface;
+    private Size mGlRecordSize;
+    private boolean mGlRecordStreamRunning = false;
+
     /**
      * Container object for Configure messages.
      */
@@ -325,6 +336,14 @@ public class RequestThreadManager {
                 }
             };
 
+    private final SurfaceTexture.OnFrameAvailableListener mRecordFrameCallback =
+            new SurfaceTexture.OnFrameAvailableListener() {
+                @Override
+                public void onFrameAvailable(SurfaceTexture surfaceTexture) {
+                    mGLThreadManager.queueNewRecordFrame();
+                }
+            };
+
     private void stopPreview() {
         if (VERBOSE) {
             Log.v(TAG, "stopPreview - preview running? " + mPreviewRunning);
@@ -439,7 +458,77 @@ public class RequestThreadManager {
         }
     }
 
+    /**
+     * Start the GL recording stream when the applied parameters select video-mode 2 and no
+     * encoder output takes the recording stream, and stop it when a repeating request leaves
+     * video-mode 2.
+     */
+    private void updateGlRecordStream(RequestHolder holder, boolean repeating) {
+        if (mRecordOutput != null || mRecordTextureSurface == null) {
+            return;
+        }
+        boolean active = LegacyRequestMapper.isHtcVideo60Active(mParams);
+        if (active && !mGlRecordStreamRunning) {
+            try {
+                LegacyCameraDevice.startRecordingStream(mCamera, mRecordTextureSurface,
+                        mGlRecordSize.getWidth(), mGlRecordSize.getHeight());
+                mGlRecordStreamRunning = true;
+                mGLThreadManager.setRecordSource(true);
+                Log.i(TAG, "Recording stream feeds the GL outputs at " + mGlRecordSize);
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                Log.w(TAG, "Recording texture abandoned, GL outputs stay on preview", e);
+            }
+        } else if (!active && mGlRecordStreamRunning && repeating) {
+            stopGlRecordStream();
+        }
+    }
+
+    private void stopGlRecordStream() {
+        if (!mGlRecordStreamRunning) {
+            return;
+        }
+        mGlRecordStreamRunning = false;
+        if (mGLThreadManager != null) {
+            mGLThreadManager.setRecordSource(false);
+        }
+        try {
+            LegacyCameraDevice.stopRecordingStream(mCamera, mRecordTextureSurface);
+        } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+            Log.w(TAG, "Recording texture abandoned while stopping the recording stream", e);
+        }
+    }
+
+    /**
+     * Returns the supported video size for the GL recording stream: {@code intermediate} when
+     * the HAL lists it, otherwise the smallest listed size of its aspect ratio that covers it,
+     * or {@code null} when none does.
+     */
+    private static Size chooseGlRecordSize(Camera.Parameters params, Size intermediate) {
+        List<Camera.Size> videoSizes = params.getSupportedVideoSizes();
+        if (videoSizes == null) {
+            videoSizes = params.getSupportedPreviewSizes();
+        }
+        if (videoSizes == null) {
+            return null;
+        }
+        long minArea = intermediate.getWidth() * (long) intermediate.getHeight();
+        Size best = null;
+        for (Camera.Size v : videoSizes) {
+            Size size = new Size(v.width, v.height);
+            if (size.equals(intermediate)) {
+                return size;
+            }
+            long area = v.width * (long) v.height;
+            if (area >= minArea && checkAspectRatiosMatch(size, intermediate)
+                    && (best == null || area < best.getWidth() * (long) best.getHeight())) {
+                best = size;
+            }
+        }
+        return best;
+    }
+
     private void stopRecordStream() {
+        stopGlRecordStream();
         if (!mRecordStreamRunning) {
             return;
         }
@@ -497,6 +586,12 @@ public class RequestThreadManager {
         mPreviewTexture = null;
         mRecordOutput = null;
         mRecordOutputSize = null;
+        if (mRecordTextureSurface != null) {
+            mRecordTextureSurface.release();
+        }
+        mRecordTextureSurface = null;
+        mRecordTexture = null;
+        mGlRecordSize = null;
 
         List<Size> previewOutputSizes = new ArrayList<>();
         List<Size> callbackOutputSizes = new ArrayList<>();
@@ -631,6 +726,15 @@ public class RequestThreadManager {
             mParams.setPreviewSize(mIntermediateBufferSize.getWidth(),
                     mIntermediateBufferSize.getHeight());
 
+            if (mRecordOutput == null && facing == CameraCharacteristics.LENS_FACING_BACK
+                    && SystemProperties.getBoolean(RECORD_STREAM_PROPERTY, true)) {
+                mGlRecordSize = chooseGlRecordSize(mParams, mIntermediateBufferSize);
+                if (mGlRecordSize != null) {
+                    mParams.set("video-size", mGlRecordSize.getWidth() + "x"
+                            + mGlRecordSize.getHeight());
+                }
+            }
+
             if (DEBUG) {
                 Log.d(TAG, "Intermediate buffer selected with dimens: " +
                         bestPreviewDimen.toString());
@@ -678,6 +782,13 @@ public class RequestThreadManager {
         mPreviewTexture = mGLThreadManager.getCurrentSurfaceTexture();
         if (mPreviewTexture != null) {
             mPreviewTexture.setOnFrameAvailableListener(mPreviewCallback);
+        }
+        mRecordTexture = mGLThreadManager.getCurrentRecordSurfaceTexture();
+        if (mRecordTexture != null && mGlRecordSize != null) {
+            mRecordTexture.setDefaultBufferSize(mGlRecordSize.getWidth(),
+                    mGlRecordSize.getHeight());
+            mRecordTexture.setOnFrameAvailableListener(mRecordFrameCallback);
+            mRecordTextureSurface = new Surface(mRecordTexture);
         }
 
         try {
@@ -1001,8 +1112,12 @@ public class RequestThreadManager {
                                     mCamera.setParameters(deferredVideoModeParams);
                                 }
                                 updateRecordStream(holder, burstHolder.isRepeating());
+                                updateGlRecordStream(holder, burstHolder.isRepeating());
                             }
                             if (holder.hasJpegTargets()) {
+                                // A still stops HAL1 preview; the next repeating preview
+                                // request restarts the GL recording stream.
+                                stopGlRecordStream();
                                 while(!mCaptureCollector.waitForPreviewsEmpty(PREVIEW_FRAME_TIMEOUT,
                                         TimeUnit.MILLISECONDS)) {
                                     // Fail preview requests until the queue is empty.

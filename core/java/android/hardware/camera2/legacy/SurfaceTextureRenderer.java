@@ -78,6 +78,22 @@ public class SurfaceTextureRenderer {
 
     // Hold this to avoid GC
     private volatile SurfaceTexture mSurfaceTexture;
+    /*
+     * Second input texture, fed by the HAL1 recording stream. While it is the frame source,
+     * preview frames only release their buffers, and each recording frame draws the outputs:
+     * paired with the next queued request when one is waiting, otherwise into the targets of
+     * the last paired request without completing a request.
+     */
+    private volatile SurfaceTexture mRecordSurfaceTexture;
+    private boolean mRecordSource = false;
+    private List<Long> mLastTargetSurfaceIds = new ArrayList<>();
+    private long mLastPairedTimestamp = 0;
+    /*
+     * An unpaired recording frame draws only within this interval after the last paired one,
+     * which spans the gap between requests of a repeating burst and ends the draws once the
+     * client stops submitting requests.
+     */
+    private static final long UNPAIRED_DRAW_WINDOW_NS = 100000000L; // 100 ms
 
     private static final int FLOAT_SIZE_BYTES = 4;
     private static final int TRIANGLE_VERTICES_DATA_STRIDE_BYTES = 5 * FLOAT_SIZE_BYTES;
@@ -163,6 +179,7 @@ public class SurfaceTextureRenderer {
 
     private int mProgram;
     private int mTextureID = 0;
+    private int mRecordTextureID = 0;
     private int muMVPMatrixHandle;
     private int muSTMatrixHandle;
     private int maPositionHandle;
@@ -243,8 +260,8 @@ public class SurfaceTextureRenderer {
         return program;
     }
 
-    private void drawFrame(SurfaceTexture st, int width, int height, int flipType)
-            throws LegacyExceptionUtils.BufferQueueAbandonedException {
+    private void drawFrame(SurfaceTexture st, int textureId, int width, int height,
+            int flipType) throws LegacyExceptionUtils.BufferQueueAbandonedException {
         checkGlError("onDrawFrame start");
         st.getTransformMatrix(mSTMatrix);
 
@@ -301,7 +318,7 @@ public class SurfaceTextureRenderer {
         checkGlError("glUseProgram");
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, mTextureID);
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId);
 
         FloatBuffer triangleVertices;
         switch(flipType) {
@@ -373,22 +390,25 @@ public class SurfaceTextureRenderer {
             throw new IllegalStateException("Could not get attrib location for uSTMatrix");
         }
 
-        int[] textures = new int[1];
-        GLES20.glGenTextures(/*n*/ 1, textures, /*offset*/ 0);
+        int[] textures = new int[2];
+        GLES20.glGenTextures(/*n*/ 2, textures, /*offset*/ 0);
 
         mTextureID = textures[0];
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, mTextureID);
-        checkGlError("glBindTexture mTextureID");
+        mRecordTextureID = textures[1];
+        for (int texture : textures) {
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture);
+            checkGlError("glBindTexture");
 
-        GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER,
-                GLES20.GL_NEAREST);
-        GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER,
-                GLES20.GL_LINEAR);
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S,
-                GLES20.GL_CLAMP_TO_EDGE);
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T,
-                GLES20.GL_CLAMP_TO_EDGE);
-        checkGlError("glTexParameter");
+            GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                    GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
+            GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                    GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S,
+                    GLES20.GL_CLAMP_TO_EDGE);
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T,
+                    GLES20.GL_CLAMP_TO_EDGE);
+            checkGlError("glTexParameter");
+        }
     }
 
     private int getTextureId() {
@@ -410,6 +430,12 @@ public class SurfaceTextureRenderer {
             mSurfaceTexture.release();
         }
         mSurfaceTexture = null;
+        if (mRecordSurfaceTexture != null) {
+            mRecordSurfaceTexture.release();
+        }
+        mRecordSurfaceTexture = null;
+        mRecordSource = false;
+        mLastTargetSurfaceIds = new ArrayList<>();
     }
 
     private void configureEGLContext() {
@@ -610,6 +636,26 @@ public class SurfaceTextureRenderer {
     }
 
     /**
+     * Return the second input texture, which the HAL1 recording stream feeds while it is the
+     * frame source.
+     *
+     * @return a {@link SurfaceTexture}, or {@code null} before the first configuration.
+     */
+    public SurfaceTexture getRecordSurfaceTexture() {
+        return mRecordSurfaceTexture;
+    }
+
+    /**
+     * Select the texture whose frames draw the outputs: the recording stream texture when
+     * {@code record} is true, the preview texture otherwise.
+     */
+    public void setRecordSource(boolean record) {
+        mRecordSource = record;
+        mLastTargetSurfaceIds = new ArrayList<>();
+        mLastPairedTimestamp = 0;
+    }
+
+    /**
      * Set a collection of output {@link Surface}s that can be drawn to.
      *
      * @param surfaces a {@link Collection} of surfaces.
@@ -666,14 +712,24 @@ public class SurfaceTextureRenderer {
 
         initializeGLState();
         mSurfaceTexture = new SurfaceTexture(getTextureId());
+        mRecordSurfaceTexture = new SurfaceTexture(mRecordTextureID);
 
     }
 
     /**
-     * Draw the current buffer in the {@link SurfaceTexture} returned from
-     * {@link #getSurfaceTexture()} into the set of target {@link Surface}s
-     * in the next request from the given {@link CaptureCollector}, or drop
-     * the frame if none is available.
+     * Draw the current buffer of the frame source into the set of target {@link Surface}s
+     * in the next request from the given {@link CaptureCollector}, or drop the frame if none
+     * is available.
+     *
+     * <p>
+     * The frame source is the preview texture returned from {@link #getSurfaceTexture()},
+     * or, after {@code setRecordSource(true)}, the recording stream texture returned from
+     * {@link #getRecordSurfaceTexture()}. A frame from the texture that is not the source only
+     * releases its buffer. A recording frame that finds no queued request draws into the
+     * targets of the last paired request with its own timestamp and completes no request, so
+     * outputs receive every recording frame while results follow the request rate; that draw
+     * stops {@code UNPAIRED_DRAW_WINDOW_NS} after the last paired frame.
+     * </p>
      *
      * <p>
      * Any {@link Surface}s targeted must be a subset of the {@link Surface}s
@@ -681,8 +737,9 @@ public class SurfaceTextureRenderer {
      * </p>
      *
      * @param targetCollector the surfaces to draw to.
+     * @param recordFrame whether the frame arrived on the recording stream texture.
      */
-    public void drawIntoSurfaces(CaptureCollector targetCollector) {
+    public void drawIntoSurfaces(CaptureCollector targetCollector, boolean recordFrame) {
         if ((mSurfaces == null || mSurfaces.size() == 0)
                 && (mConversionSurfaces == null || mConversionSurfaces.size() == 0)) {
             return;
@@ -690,14 +747,27 @@ public class SurfaceTextureRenderer {
 
         checkGlError("before updateTexImage");
 
-        mSurfaceTexture.updateTexImage();
+        SurfaceTexture st = recordFrame ? mRecordSurfaceTexture : mSurfaceTexture;
+        if (st == null) {
+            return;
+        }
+        st.updateTexImage();
+        if (recordFrame != mRecordSource) {
+            return;
+        }
+        int textureId = recordFrame ? mRecordTextureID : mTextureID;
 
-        long timestamp = mSurfaceTexture.getTimestamp();
+        long timestamp = st.getTimestamp();
 
         Pair<RequestHolder, Long> captureHolder = targetCollector.previewCaptured(timestamp);
 
         // No preview request queued, drop frame.
         if (captureHolder == null) {
+            if (recordFrame && !mLastTargetSurfaceIds.isEmpty()
+                    && timestamp - mLastPairedTimestamp < UNPAIRED_DRAW_WINDOW_NS) {
+                drawTargets(st, textureId, mLastTargetSurfaceIds, timestamp, /*request*/null);
+                return;
+            }
             if (DEBUG) {
                 Log.d(TAG, "Dropping preview frame.");
             }
@@ -716,6 +786,22 @@ public class SurfaceTextureRenderer {
             request.setOutputAbandoned();
         }
 
+        drawTargets(st, textureId, targetSurfaceIds, captureHolder.second, request);
+        if (recordFrame) {
+            mLastTargetSurfaceIds = targetSurfaceIds;
+            mLastPairedTimestamp = timestamp;
+        }
+        targetCollector.previewProduced();
+
+    }
+
+    /**
+     * Draw the current buffer of {@code st} into each configured output in
+     * {@code targetSurfaceIds}, stamped with {@code timestamp}. An abandoned output marks
+     * {@code request} when there is one.
+     */
+    private void drawTargets(SurfaceTexture st, int textureId, List<Long> targetSurfaceIds,
+            long timestamp, RequestHolder request) {
         for (EGLSurfaceHolder holder : mSurfaces) {
             if (LegacyCameraDevice.containsSurfaceId(holder.surface, targetSurfaceIds)) {
                 try{
@@ -723,14 +809,16 @@ public class SurfaceTextureRenderer {
                             holder.height);
                     makeCurrent(holder.eglSurface);
 
-                    LegacyCameraDevice.setNextTimestamp(holder.surface, captureHolder.second);
-                    drawFrame(mSurfaceTexture, holder.width, holder.height,
+                    LegacyCameraDevice.setNextTimestamp(holder.surface, timestamp);
+                    drawFrame(st, textureId, holder.width, holder.height,
                             (mFacing == CameraCharacteristics.LENS_FACING_FRONT) ?
                                     FLIP_TYPE_HORIZONTAL : FLIP_TYPE_NONE);
                     swapBuffers(holder.eglSurface);
                 } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
                     Log.w(TAG, "Surface abandoned, dropping frame. ", e);
-                    request.setOutputAbandoned();
+                    if (request != null) {
+                        request.setOutputAbandoned();
+                    }
                 }
             }
         }
@@ -739,7 +827,7 @@ public class SurfaceTextureRenderer {
                 // glReadPixels reads from the bottom of the buffer, so add an extra vertical flip
                 try {
                     makeCurrent(holder.eglSurface);
-                    drawFrame(mSurfaceTexture, holder.width, holder.height,
+                    drawFrame(st, textureId, holder.width, holder.height,
                             (mFacing == CameraCharacteristics.LENS_FACING_FRONT) ?
                                     FLIP_TYPE_BOTH : FLIP_TYPE_VERTICAL);
                 } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
@@ -755,17 +843,17 @@ public class SurfaceTextureRenderer {
                     int format = LegacyCameraDevice.detectSurfaceType(holder.surface);
                     LegacyCameraDevice.setSurfaceDimens(holder.surface, holder.width,
                             holder.height);
-                    LegacyCameraDevice.setNextTimestamp(holder.surface, captureHolder.second);
+                    LegacyCameraDevice.setNextTimestamp(holder.surface, timestamp);
                     LegacyCameraDevice.produceFrame(holder.surface, mPBufferPixels.array(),
                             holder.width, holder.height, format);
                 } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
                     Log.w(TAG, "Surface abandoned, dropping frame. ", e);
-                    request.setOutputAbandoned();
+                    if (request != null) {
+                        request.setOutputAbandoned();
+                    }
                 }
             }
         }
-        targetCollector.previewProduced();
-
     }
 
     /**
