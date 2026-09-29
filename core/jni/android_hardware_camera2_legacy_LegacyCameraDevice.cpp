@@ -813,11 +813,23 @@ static jint LegacyCameraDevice_nativeStartRecordingStream(JNIEnv* env, jobject t
     if (err == NO_ERROR) {
         err = native_window_set_buffers_dimensions(s.get(), width, height);
     }
+    // A GL texture consumer imports the buffer through eglCreateImageKHR, and
+    // the Adreno EGL driver accepts YCrCb_420_SP there but rejects the
+    // flexible YCbCr_420_888 enum; an encoder takes YCbCr_420_888, which
+    // gralloc resolves to its encodeable layout. copyFrame_l writes either
+    // through lockYCbCr.
+    int consumerUsage = 0;
     if (err == NO_ERROR) {
-        err = native_window_set_buffers_format(s.get(), HAL_PIXEL_FORMAT_YCbCr_420_888);
+        err = s->query(NATIVE_WINDOW_CONSUMER_USAGE_BITS, &consumerUsage);
+    }
+    if (err == NO_ERROR) {
+        bool textureOnly = (consumerUsage & GRALLOC_USAGE_HW_TEXTURE) != 0
+                && (consumerUsage & GRALLOC_USAGE_HW_VIDEO_ENCODER) == 0;
+        err = native_window_set_buffers_format(s.get(), textureOnly
+                ? HAL_PIXEL_FORMAT_YCrCb_420_SP : HAL_PIXEL_FORMAT_YCbCr_420_888);
     }
     if (err != NO_ERROR) {
-        ALOGE("%s: unable to configure encoder surface: %s (%d)", __FUNCTION__,
+        ALOGE("%s: unable to configure the recording surface: %s (%d)", __FUNCTION__,
                 strerror(-err), err);
         native_window_api_disconnect(s.get(), NATIVE_WINDOW_API_CAMERA);
         OVERRIDE_SURFACE_ERROR(err);
@@ -845,7 +857,8 @@ static jint LegacyCameraDevice_nativeStartRecordingStream(JNIEnv* env, jobject t
         native_window_api_disconnect(s.get(), NATIVE_WINDOW_API_CAMERA);
         return err;
     }
-    ALOGI("%s: %dx%d recording stream feeds the encoder surface", __FUNCTION__, width, height);
+    ALOGI("%s: %dx%d recording stream feeds a surface with consumer usage 0x%x", __FUNCTION__,
+            width, height, consumerUsage);
     return NO_ERROR;
 }
 

@@ -43,6 +43,9 @@ public class GLThreadManager {
     private static final int MSG_CLEANUP = 3;
     private static final int MSG_DROP_FRAMES = 4;
     private static final int MSG_ALLOW_FRAMES = 5;
+    private static final int MSG_NEW_RECORD_FRAME = 6;
+    private static final int MSG_SET_RECORD_SOURCE = 7;
+    private static final int MSG_CLEAR_UNPAIRED_TARGETS = 8;
 
     private CaptureCollector mCaptureCollector;
 
@@ -93,6 +96,7 @@ public class GLThreadManager {
                         mConfigured = true;
                         break;
                     case MSG_NEW_FRAME:
+                    case MSG_NEW_RECORD_FRAME:
                         if (mDroppingFrames) {
                             Log.w(TAG, "Ignoring frame.");
                             break;
@@ -103,7 +107,14 @@ public class GLThreadManager {
                         if (!mConfigured) {
                             Log.e(TAG, "Dropping frame, EGL context not configured!");
                         }
-                        mTextureRenderer.drawIntoSurfaces(mCaptureCollector);
+                        mTextureRenderer.drawIntoSurfaces(mCaptureCollector,
+                                msg.what == MSG_NEW_RECORD_FRAME);
+                        break;
+                    case MSG_SET_RECORD_SOURCE:
+                        mTextureRenderer.setRecordSource(msg.arg1 != 0);
+                        break;
+                    case MSG_CLEAR_UNPAIRED_TARGETS:
+                        mTextureRenderer.clearUnpairedTargets();
                         break;
                     case MSG_CLEANUP:
                         mTextureRenderer.cleanupEGLContext();
@@ -199,6 +210,47 @@ public class GLThreadManager {
         } else {
             Log.e(TAG, "GLThread dropping frame.  Not consuming frames quickly enough!");
         }
+    }
+
+    /**
+     * Queue a draw of the next recording stream frame, as {@link #queueNewFrame()} does for
+     * preview frames; at most one is queued at a time.
+     */
+    public void queueNewRecordFrame() {
+        Handler handler = mGLHandlerThread.getHandler();
+        if (!handler.hasMessages(MSG_NEW_RECORD_FRAME)) {
+            handler.sendMessage(handler.obtainMessage(MSG_NEW_RECORD_FRAME));
+        } else {
+            Log.e(TAG, "GLThread dropping recording frame.  Not consuming frames quickly enough!");
+        }
+    }
+
+    /**
+     * Make the recording stream texture ({@code true}) or the preview texture ({@code false})
+     * the source of output frames, in order with queued frames.
+     */
+    public void setRecordSource(boolean record) {
+        Handler handler = mGLHandlerThread.getHandler();
+        handler.sendMessage(handler.obtainMessage(MSG_SET_RECORD_SOURCE, record ? 1 : 0,
+                /*arg2*/0));
+    }
+
+    /**
+     * End unpaired recording-frame draws until the next frame pairs with a request, in order
+     * with queued frames.
+     */
+    public void clearUnpairedTargets() {
+        mGLHandlerThread.getHandler().sendEmptyMessage(MSG_CLEAR_UNPAIRED_TARGETS);
+    }
+
+    /**
+     * Get the recording stream input texture of the current configuration.
+     *
+     * @return an {@link android.graphics.SurfaceTexture}, or {@code null} before the first
+     *         configuration.
+     */
+    public SurfaceTexture getCurrentRecordSurfaceTexture() {
+        return mTextureRenderer.getRecordSurfaceTexture();
     }
 
     /**
