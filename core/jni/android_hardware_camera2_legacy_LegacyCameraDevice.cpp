@@ -38,9 +38,19 @@
 #include <system/window.h>
 #include <ui/GraphicBuffer.h>
 #include <utils/Mutex.h>
+#include <utils/ThreadDefs.h>
 
+#include <errno.h>
 #include <stdint.h>
 #include <inttypes.h>
+#include <sys/resource.h>
+
+#include <condition_variable>
+#include <deque>
+#include <map>
+#include <mutex>
+#include <thread>
+#include <utility>
 #if defined(__ARM_NEON)
 #include <arm_neon.h>
 #endif
@@ -478,38 +488,127 @@ static void swapRecordingChromaRow(uint8_t* dst, const uint8_t* src, size_t n) {
  * (Y stride aligned to 128, Y scanlines to 32, chroma scanlines to 16, chroma
  * after the padded luma plane), or tightly packed. Each frame is copied row by
  * row into a buffer dequeued from the surface, the chroma pairs reversed for
- * an NV21 texture target, stamped with the HAL
- * timestamp, and returned to the HAL before onRecordingFrame returns, so the
- * HAL's fixed video buffer pool never waits on the encoder. A frame that finds
- * no free encoder buffer within kDequeueTimeoutNs is dropped.
+ * an NV21 texture target, and stamped with the HAL timestamp. A frame that
+ * finds no free encoder buffer within kDequeueTimeoutNs is dropped.
+ *
+ * The HAL delivers frames one at a time through a oneway binder queue, so the
+ * callback's wall time bounds the HAL's delivery rate. The callback therefore
+ * runs at ANDROID_PRIORITY_URGENT_DISPLAY, reads pixels through an IMemory it
+ * keeps per HAL buffer for the whole session (a fresh proxy costs a binder
+ * round trip and a heap map per frame), and hands the frame back to the HAL
+ * on a release thread, whose binder call leaves the callback's serial path.
+ * Every received frame reaches Camera::releaseRecordingFrame exactly once, and
+ * deactivate() returns only after the release queue is empty.
  */
 class RecordingStreamBridge : public CameraRecordingFrameSink {
 public:
     RecordingStreamBridge(const sp<Surface>& surface, uint32_t width, uint32_t height)
-            : mSurface(surface), mWidth(width), mHeight(height) {}
+            : mSurface(surface), mWidth(width), mHeight(height),
+              mReleaser(&RecordingStreamBridge::releaseLoop, this) {}
+
+    ~RecordingStreamBridge() override { stopReleaser(); }
 
     void onRecordingFrame(const sp<Camera>& camera, nsecs_t timestamp,
             const sp<IMemory>& frame) override {
+        errno = 0;
+        const int callerNice = getpriority(PRIO_PROCESS, 0);
+        const bool restoreNice = errno == 0 && callerNice > ANDROID_PRIORITY_URGENT_DISPLAY;
+        if (restoreNice) {
+            setpriority(PRIO_PROCESS, 0, ANDROID_PRIORITY_URGENT_DISPLAY);
+        }
         {
+            // Queued under mLock, so a deactivate() that follows this frame finds
+            // its release already queued and waits for it.
             Mutex::Autolock _l(mLock);
             if (mActive && frame != nullptr) {
-                copyFrame_l(timestamp, frame);
+                copyFrame_l(timestamp, sessionMemory_l(frame));
             }
+            queueRelease(camera, frame);
         }
-        camera->releaseRecordingFrame(frame);
+        if (restoreNice) {
+            setpriority(PRIO_PROCESS, 0, callerNice);
+        }
     }
 
     void deactivate() override {
-        Mutex::Autolock _l(mLock);
-        mActive = false;
-        ALOGI("%s: %ux%u recording stream: %" PRIu64 " frames copied, %" PRIu64 " dropped",
-                __FUNCTION__, mWidth, mHeight, mCopied, mDropped);
+        {
+            Mutex::Autolock _l(mLock);
+            mActive = false;
+            mSessionMemory.clear();
+            ALOGI("%s: %ux%u recording stream: %" PRIu64 " frames copied, %" PRIu64 " dropped",
+                    __FUNCTION__, mWidth, mHeight, mCopied, mDropped);
+        }
+        std::unique_lock<std::mutex> lock(mReleaseLock);
+        mReleaseIdle.wait(lock, [this] { return mReleaseQueue.empty() && !mReleasing; });
     }
 
     static constexpr nsecs_t dequeueTimeoutNs() { return kDequeueTimeoutNs; }
 
 private:
     static constexpr nsecs_t kDequeueTimeoutNs = 20000000; // 20 ms
+    // The HAL recording pool holds far fewer buffers; a larger map means the HAL
+    // hands out fresh MemoryBase objects, and the map restarts rather than grows.
+    static constexpr size_t kMaxSessionMemory = 64;
+
+    // Returns the session's IMemory for frame's HAL buffer, keeping frame as that
+    // buffer's IMemory the first time the buffer appears.
+    sp<IMemory> sessionMemory_l(const sp<IMemory>& frame) {
+        const IBinder* key = IInterface::asBinder(frame).get();
+        auto it = mSessionMemory.find(key);
+        if (it != mSessionMemory.end()) {
+            return it->second;
+        }
+        if (mSessionMemory.size() >= kMaxSessionMemory) {
+            mSessionMemory.clear();
+        }
+        mSessionMemory.emplace(key, frame);
+        return frame;
+    }
+
+    void queueRelease(const sp<Camera>& camera, const sp<IMemory>& frame) {
+        {
+            std::lock_guard<std::mutex> lock(mReleaseLock);
+            if (!mReleaserStopped) {
+                mReleaseQueue.emplace_back(camera, frame);
+                mReleaseReady.notify_one();
+                return;
+            }
+        }
+        camera->releaseRecordingFrame(frame);
+    }
+
+    void releaseLoop() {
+        setpriority(PRIO_PROCESS, 0, ANDROID_PRIORITY_URGENT_DISPLAY);
+        std::unique_lock<std::mutex> lock(mReleaseLock);
+        for (;;) {
+            mReleaseReady.wait(lock, [this] { return mReleaserStopped || !mReleaseQueue.empty(); });
+            if (mReleaseQueue.empty()) {
+                return;
+            }
+            std::pair<sp<Camera>, sp<IMemory>> next = std::move(mReleaseQueue.front());
+            mReleaseQueue.pop_front();
+            mReleasing = true;
+            lock.unlock();
+            next.first->releaseRecordingFrame(next.second);
+            next = {};
+            lock.lock();
+            mReleasing = false;
+            if (mReleaseQueue.empty()) {
+                mReleaseIdle.notify_all();
+            }
+        }
+    }
+
+    void stopReleaser() {
+        {
+            std::lock_guard<std::mutex> lock(mReleaseLock);
+            mReleaserStopped = true;
+            mReleaseReady.notify_one();
+        }
+        if (mReleaser.joinable()) {
+            mReleaser.join();
+        }
+    }
 
     void copyFrame_l(nsecs_t timestamp, const sp<IMemory>& frame) {
         const uint8_t* src = static_cast<const uint8_t*>(frame->unsecurePointer());
@@ -608,6 +707,16 @@ private:
     bool mActive = true;
     uint64_t mCopied = 0;
     uint64_t mDropped = 0;
+    std::map<const IBinder*, sp<IMemory>> mSessionMemory; // guarded by mLock
+
+    std::mutex mReleaseLock;
+    std::condition_variable mReleaseReady;
+    std::condition_variable mReleaseIdle;
+    std::deque<std::pair<sp<Camera>, sp<IMemory>>> mReleaseQueue;
+    bool mReleasing = false;
+    bool mReleaserStopped = false;
+    // Declared last: the thread starts in the constructor and uses every member above.
+    std::thread mReleaser;
 };
 
 extern "C" {
@@ -904,10 +1013,12 @@ static jint LegacyCameraDevice_nativeStopRecordingStream(JNIEnv* env, jobject th
     if (c == nullptr) {
         return NO_INIT;
     }
-    c->stopRecording();
+    // The bridge returns queued frames on its release thread; deactivate() drains
+    // that queue so every frame reaches the HAL before its recording stream stops.
     if (previous != nullptr) {
         previous->deactivate();
     }
+    c->stopRecording();
     sp<ANativeWindow> anw = getNativeWindow(env, surface);
     if (anw != nullptr) {
         native_window_api_disconnect(anw.get(), NATIVE_WINDOW_API_CAMERA);
