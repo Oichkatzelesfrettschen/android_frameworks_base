@@ -220,8 +220,6 @@ public class GLThreadManager {
         Handler handler = mGLHandlerThread.getHandler();
         if (!handler.hasMessages(MSG_NEW_RECORD_FRAME)) {
             handler.sendMessage(handler.obtainMessage(MSG_NEW_RECORD_FRAME));
-        } else {
-            Log.e(TAG, "GLThread dropping recording frame.  Not consuming frames quickly enough!");
         }
     }
 
@@ -243,14 +241,38 @@ public class GLThreadManager {
         mGLHandlerThread.getHandler().sendEmptyMessage(MSG_CLEAR_UNPAIRED_TARGETS);
     }
 
-    /**
-     * Get the recording stream input texture of the current configuration.
-     *
-     * @return an {@link android.graphics.SurfaceTexture}, or {@code null} before the first
-     *         configuration.
-     */
-    public SurfaceTexture getCurrentRecordSurfaceTexture() {
-        return mTextureRenderer.getRecordSurfaceTexture();
+    private void runOnGlAndWait(Runnable operation) {
+        ConditionVariable completion = new ConditionVariable(false);
+        RuntimeException[] failure = new RuntimeException[1];
+        if (!mGLHandlerThread.getHandler().post(() -> {
+            try {
+                operation.run();
+            } catch (RuntimeException exception) {
+                failure[0] = exception;
+            } finally {
+                completion.open();
+            }
+        })) throw new IllegalStateException("GL thread stops before recording operation");
+        completion.block();
+        if (failure[0] != null) throw failure[0];
+    }
+
+    /** Create the importer before camera callbacks can queue GL draws. */
+    public long createIonRecordingBridge(int width, int height) {
+        long[] result = new long[1];
+        runOnGlAndWait(() -> result[0] = mTextureRenderer.createIonRecordingBridge(this,
+                width, height));
+        return result[0];
+    }
+
+    /** Finish queued draws before stopping the HAL recording pool. */
+    public void stopIonRecordingDraws() {
+        runOnGlAndWait(() -> mTextureRenderer.setRecordSource(false));
+    }
+
+    /** Free imported images after HAL callbacks and GPU releases drain. */
+    public void destroyIonRecordingBridge() {
+        runOnGlAndWait(() -> mTextureRenderer.destroyIonRecordingBridge());
     }
 
     /**
