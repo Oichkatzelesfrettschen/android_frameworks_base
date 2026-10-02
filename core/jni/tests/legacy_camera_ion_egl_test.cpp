@@ -5,11 +5,12 @@
 #include <sys/stat.h>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
+#include <vector>
 
 #include "LegacyCameraIonBuffer.h"
 
@@ -81,7 +82,8 @@ int main() {
             "EGL pbuffer config");
     const EGLint contextAttributes[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
     EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, contextAttributes);
-    const EGLint pbufferAttributes[] = {EGL_WIDTH, 64, EGL_HEIGHT, 64, EGL_NONE};
+    const EGLint pbufferAttributes[] = {EGL_WIDTH, static_cast<EGLint>(width), EGL_HEIGHT,
+                                        static_cast<EGLint>(height), EGL_NONE};
     EGLSurface surface = eglCreatePbufferSurface(display, config, pbufferAttributes);
     require(context != EGL_NO_CONTEXT && surface != EGL_NO_SURFACE &&
                 eglMakeCurrent(display, surface, surface, context),
@@ -94,7 +96,16 @@ int main() {
         reinterpret_cast<PFNEGLDESTROYIMAGEKHRPROC>(eglGetProcAddress("eglDestroyImageKHR"));
     auto bindImage = reinterpret_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(
         eglGetProcAddress("glEGLImageTargetTexture2DOES"));
-    require(createImage && destroyImage && bindImage, "EGLImage entry points");
+    auto createSync =
+        reinterpret_cast<PFNEGLCREATESYNCKHRPROC>(eglGetProcAddress("eglCreateSyncKHR"));
+    auto waitSync =
+        reinterpret_cast<PFNEGLCLIENTWAITSYNCKHRPROC>(eglGetProcAddress("eglClientWaitSyncKHR"));
+    auto destroySync =
+        reinterpret_cast<PFNEGLDESTROYSYNCKHRPROC>(eglGetProcAddress("eglDestroySyncKHR"));
+    require(createImage && destroyImage && bindImage && createSync && waitSync && destroySync,
+            "EGLImage and KHR completion entry points");
+    require(strstr(eglQueryString(display, EGL_EXTENSIONS), "EGL_KHR_fence_sync") != nullptr,
+            "KHR completion extension advertised");
     const EGLint imageAttributes[] = {EGL_IMAGE_PRESERVED_KHR, EGL_TRUE, EGL_NONE};
     EGLImageKHR image = createImage(display, EGL_NO_CONTEXT, EGL_NATIVE_BUFFER_ANDROID,
                                     imported->getNativeBuffer(), imageAttributes);
@@ -128,8 +139,8 @@ int main() {
     glVertexAttribPointer(position, 2, GL_FLOAT, GL_FALSE, 0, vertices);
     glEnableVertexAttribArray(position);
     glUniform1i(glGetUniformLocation(program, "t"), 0);
-    glViewport(0, 0, 64, 64);
-    std::array<unsigned char, 64 * 64 * 4> pixels{};
+    glViewport(0, 0, width, height);
+    std::vector<unsigned char> pixels(width * height * 4);
     for (int arm = 0; arm < 2; ++arm) {
         android_ycbcr planes{};
         require(original->lockYCbCr(GRALLOC_USAGE_SW_WRITE_OFTEN, &planes) == NO_ERROR,
@@ -138,7 +149,9 @@ int main() {
         for (uint32_t row = 0; row < height; ++row) {
             auto* output = static_cast<unsigned char*>(planes.y) + row * planes.ystride;
             for (uint32_t column = 0; column < width; ++column) {
-                output[column] = luma[(row >= height / 2 ? 2 : 0) + (column >= width / 2 ? 1 : 0)];
+                output[column] =
+                    luma[arm == 0 ? (row >= height / 2 ? 2 : 0) + (column >= width / 2 ? 1 : 0)
+                                  : (row + column) % 4];
             }
         }
         const int cb = arm == 0 ? 128 : 90;
@@ -154,23 +167,38 @@ int main() {
         require(original->unlock() == NO_ERROR, "pattern source cache clean");
         bindImage(GL_TEXTURE_EXTERNAL_OES, image);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        glReadPixels(0, 0, 64, 64, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+        EGLSyncKHR completion = createSync(display, EGL_SYNC_FENCE_KHR, nullptr);
+        require(completion != EGL_NO_SYNC_KHR, "KHR completion creation");
+        glFlush();
+        bool completed = false;
+        EGLint waitError = EGL_SUCCESS;
+        std::thread releaseThread([&] {
+            completed = waitSync(display, completion, 0, 100000000) == EGL_CONDITION_SATISFIED_KHR;
+            waitError = eglGetError();
+            completed = destroySync(display, completion) == EGL_TRUE && completed;
+            eglReleaseThread();
+        });
+        releaseThread.join();
+        std::printf("cross-thread completion EGL error=0x%x\n", waitError);
+        require(completed && waitError == EGL_SUCCESS,
+                "KHR completion wait/destroy on release thread");
+        glReadPixels(0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
         require(glGetError() == GL_NO_ERROR, "pattern draw/readback");
         int largestError = 0;
-        for (int row = 4; row < 60; ++row) {
-            if (row >= 28 && row < 36) continue;
-            for (int column = 4; column < 60; ++column) {
-                if (column >= 28 && column < 36) continue;
-                const int region = (row >= 32 ? 2 : 0) + (column >= 32 ? 1 : 0);
+        for (uint32_t row = 2; row + 2 < height; ++row) {
+            for (uint32_t column = 2; column + 2 < width; ++column) {
+                const uint32_t region =
+                    arm == 0 ? (row >= height / 2 ? 2 : 0) + (column >= width / 2 ? 1 : 0)
+                             : (row + column) % 4;
                 const double luminance = 1.164383 * (luma[region] - 16);
                 const int expected[] = {
                     channel(luminance + 1.596027 * (cr - 128)),
                     channel(luminance - 0.391762 * (cb - 128) - 0.812968 * (cr - 128)),
                     channel(luminance + 2.017232 * (cb - 128))};
                 for (int component = 0; component < 3; ++component) {
-                    largestError = std::max(largestError,
-                                            std::abs(pixels[(row * 64 + column) * 4 + component] -
-                                                     expected[component]));
+                    largestError = std::max(
+                        largestError, std::abs(pixels[(row * width + column) * 4 + component] -
+                                               expected[component]));
                 }
             }
         }

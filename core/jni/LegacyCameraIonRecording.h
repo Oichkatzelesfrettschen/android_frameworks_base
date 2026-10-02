@@ -6,7 +6,6 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <android_runtime/AndroidRuntime.h>
-#include <ui/Fence.h>
 
 #include <algorithm>
 #include <condition_variable>
@@ -20,7 +19,7 @@
 namespace android {
 
 // The GL thread owns EGLImages; the release thread owns completion-fence waits.
-// HAL allocations stay held through the last sampling draw and its native fence.
+// HAL allocations stay held through the last sampling draw and its EGL completion fence.
 class IonRecordingStreamBridge : public CameraRecordingFrameSink {
    public:
     IonRecordingStreamBridge(JNIEnv* env, jobject manager, uint32_t width, uint32_t height)
@@ -49,8 +48,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
             mNotify == nullptr || mManager == nullptr)
             return NO_INIT;
         const char* extensions = eglQueryString(mDisplay, EGL_EXTENSIONS);
-        if (extensions == nullptr ||
-            strstr(extensions, "EGL_ANDROID_native_fence_sync") == nullptr) {
+        if (extensions == nullptr || strstr(extensions, "EGL_KHR_fence_sync") == nullptr) {
             return INVALID_OPERATION;
         }
         mCreateImage =
@@ -63,10 +61,10 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
             reinterpret_cast<PFNEGLCREATESYNCKHRPROC>(eglGetProcAddress("eglCreateSyncKHR"));
         mDestroySync =
             reinterpret_cast<PFNEGLDESTROYSYNCKHRPROC>(eglGetProcAddress("eglDestroySyncKHR"));
-        mDupFence = reinterpret_cast<PFNEGLDUPNATIVEFENCEFDANDROIDPROC>(
-            eglGetProcAddress("eglDupNativeFenceFDANDROID"));
+        mWaitSync = reinterpret_cast<PFNEGLCLIENTWAITSYNCKHRPROC>(
+            eglGetProcAddress("eglClientWaitSyncKHR"));
         if (!mCreateImage || !mDestroyImage || !mBindImage || !mCreateSync || !mDestroySync ||
-            !mDupFence)
+            !mWaitSync)
             return INVALID_OPERATION;
         return mImporter.initialize(mWidth, mHeight);
     }
@@ -83,7 +81,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
             if (!mActive || frame == nullptr || mError != NO_ERROR ||
                 mPending.size() >= kQueueDepth || mHeld >= kHeldBudget) {
                 ++mDropped;
-                queueRelease({camera, frame, nullptr}, Fence::NO_FENCE);
+                queueRelease({camera, frame, nullptr}, EGL_NO_SYNC_KHR);
             } else {
                 const IBinder* key = IInterface::asBinder(frame).get();
                 auto found = mSlots.find(key);
@@ -108,7 +106,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
                     mError = BAD_VALUE;
                     ++mDropped;
                     ALOGE("ION recording pool/layout/ownership validation failed");
-                    queueRelease({camera, frame, nullptr}, Fence::NO_FENCE);
+                    queueRelease({camera, frame, nullptr}, EGL_NO_SYNC_KHR);
                 } else {
                     found->second.held = true;
                     ++mHeld;
@@ -137,7 +135,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
             if (slot.image == EGL_NO_IMAGE_KHR) {
                 ALOGE("ION recording eglCreateImageKHR failed 0x%x", eglGetError());
                 mError = INVALID_OPERATION;
-                queueRelease(mDrawing, Fence::NO_FENCE);
+                queueRelease(mDrawing, EGL_NO_SYNC_KHR);
                 mDrawing = {};
                 mDrawIdle.notify_all();
                 return mError;
@@ -148,7 +146,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
         mBindImage(GL_TEXTURE_EXTERNAL_OES, slot.image);
         if (glGetError() != GL_NO_ERROR) {
             mError = INVALID_OPERATION;
-            queueRelease(mDrawing, Fence::NO_FENCE);
+            queueRelease(mDrawing, EGL_NO_SYNC_KHR);
             mDrawing = {};
             mDrawIdle.notify_all();
             return mError;
@@ -161,17 +159,17 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
     status_t drawn() {
         std::lock_guard<std::mutex> lock(mLock);
         if (mDrawing.slot == nullptr) return NO_ERROR;
-        EGLSyncKHR sync = mCreateSync(mDisplay, EGL_SYNC_NATIVE_FENCE_ANDROID, nullptr);
+        EGLSyncKHR sync = mCreateSync(mDisplay, EGL_SYNC_FENCE_KHR, nullptr);
         glFlush();
-        const int fenceFd = sync == EGL_NO_SYNC_KHR ? -1 : mDupFence(mDisplay, sync);
-        if (sync != EGL_NO_SYNC_KHR) mDestroySync(mDisplay, sync);
-        if (fenceFd < 0) {
-            // A failed fence is a session error. Completion still precedes ownership return.
+        if (sync == EGL_NO_SYNC_KHR) {
+            // Failed synchronization rejects the session; completion precedes ownership return.
             glFinish();
+            LOG_ALWAYS_FATAL_IF(glGetError() != GL_NO_ERROR,
+                                "HAL1 GPU completion is unproven after EGL fence rejection");
             mError = INVALID_OPERATION;
-            ALOGE("ION recording native fence creation failed");
+            ALOGE("ION recording EGL completion fence creation fails 0x%x", eglGetError());
         }
-        queueRelease(mDrawing, fenceFd < 0 ? Fence::NO_FENCE : sp<Fence>(new Fence(fenceFd)));
+        queueRelease(mDrawing, sync);
         mDrawing = {};
         mDrawIdle.notify_all();
         return mError;
@@ -181,7 +179,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
         {
             std::unique_lock<std::mutex> lock(mLock);
             mActive = false;
-            for (const Frame& frame : mPending) queueRelease(frame, Fence::NO_FENCE);
+            for (const Frame& frame : mPending) queueRelease(frame, EGL_NO_SYNC_KHR);
             mPending.clear();
             mDrawIdle.wait(lock, [this] { return mDrawing.slot == nullptr; });
         }
@@ -229,13 +227,13 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
     };
     struct Release {
         Frame frame;
-        sp<Fence> fence;
+        EGLSyncKHR fence = EGL_NO_SYNC_KHR;
     };
     void notifyFrame() {
         JNIEnv* env = AndroidRuntime::getJNIEnv();
         if (mManager != nullptr && env != nullptr) env->CallVoidMethod(mManager, mNotify);
     }
-    void queueRelease(const Frame& frame, const sp<Fence>& fence) {
+    void queueRelease(const Frame& frame, EGLSyncKHR fence) {
         std::lock_guard<std::mutex> lock(mReleaseLock);
         mReleaseQueue.push_back({frame, fence});
         mReleaseReady.notify_one();
@@ -245,23 +243,37 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
         std::unique_lock<std::mutex> releaseLock(mReleaseLock);
         for (;;) {
             mReleaseReady.wait(releaseLock, [this] { return mQuit || !mReleaseQueue.empty(); });
-            if (mReleaseQueue.empty()) return;
+            if (mReleaseQueue.empty()) {
+                eglReleaseThread();
+                return;
+            }
             Release next = std::move(mReleaseQueue.front());
             mReleaseQueue.pop_front();
             mReleasing = true;
             releaseLock.unlock();
-            status_t fenceStatus = next.fence->wait(100);
-            if (fenceStatus != NO_ERROR) {
-                {
+            if (next.fence != EGL_NO_SYNC_KHR) {
+                EGLint fenceStatus = mWaitSync(mDisplay, next.fence, 0, 100000000);
+                if (fenceStatus != EGL_CONDITION_SATISFIED_KHR) {
+                    {
+                        std::lock_guard<std::mutex> lock(mLock);
+                        ++mFenceErrors;
+                        mError = TIMED_OUT;
+                    }
+                    ALOGE("ION recording EGL fence wait fails 0x%x; retaining HAL ownership",
+                          fenceStatus);
+                    // A timeout cannot authorize CPP writes while GPU reads remain pending.
+                    fenceStatus = mWaitSync(mDisplay, next.fence, 0, EGL_FOREVER_KHR);
+                    LOG_ALWAYS_FATAL_IF(fenceStatus != EGL_CONDITION_SATISFIED_KHR,
+                                        "HAL1 recording fence completion is unproven: 0x%x",
+                                        fenceStatus);
+                }
+                if (mDestroySync(mDisplay, next.fence) != EGL_TRUE) {
                     std::lock_guard<std::mutex> lock(mLock);
                     ++mFenceErrors;
-                    mError = TIMED_OUT;
+                    mError = INVALID_OPERATION;
+                    ALOGE("ION recording EGL completion fence destruction fails 0x%x",
+                          eglGetError());
                 }
-                ALOGE("ION recording fence wait failed %d; retaining HAL ownership", fenceStatus);
-                // A timeout cannot authorize the CPP to overwrite an allocation under GPU read.
-                fenceStatus = next.fence->waitForever("HAL1 recording ION");
-                LOG_ALWAYS_FATAL_IF(fenceStatus != NO_ERROR,
-                                    "HAL1 recording fence completion is unproven: %d", fenceStatus);
             }
             {
                 std::lock_guard<std::mutex> lock(mLock);
@@ -308,7 +320,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC mBindImage = nullptr;
     PFNEGLCREATESYNCKHRPROC mCreateSync = nullptr;
     PFNEGLDESTROYSYNCKHRPROC mDestroySync = nullptr;
-    PFNEGLDUPNATIVEFENCEFDANDROIDPROC mDupFence = nullptr;
+    PFNEGLCLIENTWAITSYNCKHRPROC mWaitSync = nullptr;
     std::mutex mReleaseLock;
     std::condition_variable mReleaseReady;
     std::condition_variable mReleaseIdle;
