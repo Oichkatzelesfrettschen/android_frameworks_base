@@ -415,20 +415,22 @@ public class SurfaceTextureRenderer {
 
         mTextureID = textures[0];
         mRecordTextureID = textures[1];
-        for (int texture : textures) {
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture);
-            checkGlError("glBindTexture");
+        for (int texture : textures) configureExternalTexture(texture);
+    }
 
-            GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                    GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
-            GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                    GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
-            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S,
-                    GLES20.GL_CLAMP_TO_EDGE);
-            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T,
-                    GLES20.GL_CLAMP_TO_EDGE);
-            checkGlError("glTexParameter");
-        }
+    private void configureExternalTexture(int texture) {
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture);
+        checkGlError("glBindTexture");
+
+        GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
+        GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S,
+                GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T,
+                GLES20.GL_CLAMP_TO_EDGE);
+        checkGlError("glTexParameter");
     }
 
     private int getTextureId() {
@@ -677,6 +679,12 @@ public class SurfaceTextureRenderer {
     /** Create the checked ION importer on the current GL context. */
     public long createIonRecordingBridge(GLThreadManager manager, int width, int height) {
         if (mIonRecordingBridge != 0) throw new IllegalStateException("Recording bridge active");
+        if (mRecordTextureID == 0) {
+            int[] texture = new int[1];
+            GLES20.glGenTextures(1, texture, 0);
+            mRecordTextureID = texture[0];
+            configureExternalTexture(mRecordTextureID);
+        }
         mIonRecordingSize = new Size(width, height);
         mIonRecordingBridge = LegacyCameraDevice.nativeCreateIonRecordingBridge(manager,
                 width, height);
@@ -688,8 +696,14 @@ public class SurfaceTextureRenderer {
     /** Destroy imported images before the EGL context that owns them. */
     public void destroyIonRecordingBridge() {
         if (mIonRecordingBridge != 0) {
-            LegacyCameraDevice.nativeDestroyIonRecordingBridge(mIonRecordingBridge);
+            long bridge = mIonRecordingBridge;
             mIonRecordingBridge = 0;
+            try {
+                LegacyCameraDevice.nativeDestroyIonRecordingBridge(bridge);
+            } finally {
+                GLES20.glDeleteTextures(1, new int[] {mRecordTextureID}, 0);
+                mRecordTextureID = 0;
+            }
         }
         mIonRecordingSize = null;
         setRecordSource(false);

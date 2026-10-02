@@ -8,6 +8,7 @@
 #include <android_runtime/AndroidRuntime.h>
 #include <ui/Fence.h>
 
+#include <algorithm>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -80,7 +81,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
             std::lock_guard<std::mutex> lock(mLock);
             ++mReceived;
             if (!mActive || frame == nullptr || mError != NO_ERROR ||
-                mPending.size() >= kQueueDepth) {
+                mPending.size() >= kQueueDepth || mHeld >= kHeldBudget) {
                 ++mDropped;
                 queueRelease({camera, frame, nullptr}, Fence::NO_FENCE);
             } else {
@@ -101,13 +102,17 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
                               mSlots.size(), size, LegacyCameraIonBuffer::kVenusFormat);
                     }
                 }
-                if (found == mSlots.end() || found->second.held) {
+                LOG_ALWAYS_FATAL_IF(found != mSlots.end() && found->second.held,
+                                    "HAL1 recording buffer reused before GPU ownership returns");
+                if (found == mSlots.end()) {
                     mError = BAD_VALUE;
                     ++mDropped;
                     ALOGE("ION recording pool/layout/ownership validation failed");
                     queueRelease({camera, frame, nullptr}, Fence::NO_FENCE);
                 } else {
                     found->second.held = true;
+                    ++mHeld;
+                    mHeldPeak = std::max(mHeldPeak, mHeld);
                     mPending.push_back({camera, frame, &found->second, timestamp});
                 }
                 notifyFrame();
@@ -184,25 +189,32 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
         mReleaseIdle.wait(releaseLock, [this] { return mReleaseQueue.empty() && !mReleasing; });
     }
 
-    void destroyImages(JNIEnv* env) {
+    status_t destroyImages(JNIEnv* env) {
         deactivate();
         std::lock_guard<std::mutex> lock(mLock);
         for (auto& entry : mSlots) {
             if (entry.second.image != EGL_NO_IMAGE_KHR) {
-                mDestroyImage(mDisplay, entry.second.image);
+                if (mDestroyImage(mDisplay, entry.second.image) != EGL_TRUE) {
+                    mError = INVALID_OPERATION;
+                    ALOGE("ION recording eglDestroyImageKHR fails 0x%x", eglGetError());
+                }
             }
         }
         mSlots.clear();
         if (mManager != nullptr) env->DeleteGlobalRef(mManager);
         mManager = nullptr;
         ALOGI("ION recording %ux%u received=%" PRIu64 " bound=%" PRIu64 " returned=%" PRIu64
-              " dropped=%" PRIu64 " images=%" PRIu64 " fence-errors=%" PRIu64 " CPU-copy=0",
-              mWidth, mHeight, mReceived, mBound, mReturned, mDropped, mImages, mFenceErrors);
+              " dropped=%" PRIu64 " images=%" PRIu64 " fence-errors=%" PRIu64
+              " held-peak=%zu CPU-copy=0",
+              mWidth, mHeight, mReceived, mBound, mReturned, mDropped, mImages, mFenceErrors,
+              mHeldPeak);
+        return mError;
     }
 
    private:
     static constexpr size_t kPoolSize = 16;
     static constexpr size_t kQueueDepth = 3;
+    static constexpr size_t kHeldBudget = 6;
     struct Slot {
         sp<IMemory> memory;
         sp<GraphicBuffer> buffer;
@@ -253,7 +265,10 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
             }
             {
                 std::lock_guard<std::mutex> lock(mLock);
-                if (next.frame.slot != nullptr) next.frame.slot->held = false;
+                if (next.frame.slot != nullptr) {
+                    next.frame.slot->held = false;
+                    --mHeld;
+                }
             }
             next.frame.camera->releaseRecordingFrame(next.frame.memory);
             {
@@ -286,6 +301,8 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
     uint64_t mDropped = 0;
     uint64_t mImages = 0;
     uint64_t mFenceErrors = 0;
+    size_t mHeld = 0;
+    size_t mHeldPeak = 0;
     PFNEGLCREATEIMAGEKHRPROC mCreateImage = nullptr;
     PFNEGLDESTROYIMAGEKHRPROC mDestroyImage = nullptr;
     PFNGLEGLIMAGETARGETTEXTURE2DOESPROC mBindImage = nullptr;
