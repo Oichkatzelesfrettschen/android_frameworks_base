@@ -689,7 +689,6 @@ public class SurfaceTextureRenderer {
         mIonRecordingBridge = LegacyCameraDevice.nativeCreateIonRecordingBridge(manager,
                 width, height);
         if (mIonRecordingBridge == 0) throw new IllegalStateException("ION importer unavailable");
-        setRecordSource(true);
         return mIonRecordingBridge;
     }
 

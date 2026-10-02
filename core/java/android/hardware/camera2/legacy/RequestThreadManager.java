@@ -460,14 +460,26 @@ public class RequestThreadManager {
         }
         boolean active = LegacyRequestMapper.isHtcVideo60Active(mParams);
         if (active && !mGlRecordStreamRunning) {
+            boolean started = false;
             try {
                 mIonRecordingBridge = mGLThreadManager.createIonRecordingBridge(
                         mGlRecordSize.getWidth(), mGlRecordSize.getHeight());
                 LegacyExceptionUtils.throwOnError(LegacyCameraDevice.nativeStartIonRecordingStream(
                         mCamera, mIonRecordingBridge));
+                started = true;
+                mGLThreadManager.startIonRecordingDraws();
                 mGlRecordStreamRunning = true;
                 Log.i(TAG, "Recording stream feeds the GL outputs at " + mGlRecordSize);
             } catch (LegacyExceptionUtils.BufferQueueAbandonedException | RuntimeException e) {
+                if (started) {
+                    try {
+                        LegacyExceptionUtils.throwOnError(
+                                LegacyCameraDevice.nativeStopIonRecordingStream(mCamera));
+                    } catch (LegacyExceptionUtils.BufferQueueAbandonedException
+                            | RuntimeException stopFailure) {
+                        e.addSuppressed(stopFailure);
+                    }
+                }
                 if (mIonRecordingBridge != 0) {
                     mGLThreadManager.destroyIonRecordingBridge();
                     mIonRecordingBridge = 0;

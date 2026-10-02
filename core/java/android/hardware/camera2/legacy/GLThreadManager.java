@@ -265,6 +265,14 @@ public class GLThreadManager {
         return result[0];
     }
 
+    /** Select the ring after the HAL finishes its recording startup. */
+    public void startIonRecordingDraws() {
+        runOnGlAndWait(() -> {
+            mTextureRenderer.setRecordSource(true);
+            queueNewRecordFrame();
+        });
+    }
+
     /** Finish queued draws before stopping the HAL recording pool. */
     public void stopIonRecordingDraws() {
         runOnGlAndWait(() -> mTextureRenderer.setRecordSource(false));
