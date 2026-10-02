@@ -84,7 +84,8 @@ public class SurfaceTextureRenderer {
      * paired with the next queued request when one is waiting, otherwise into the targets of
      * the last paired request without completing a request.
      */
-    private volatile SurfaceTexture mRecordSurfaceTexture;
+    private long mIonRecordingBridge;
+    private Size mIonRecordingSize;
     private boolean mRecordSource = false;
     private List<Long> mLastTargetSurfaceIds = new ArrayList<>();
     private long mLastPairedTimestamp = 0;
@@ -276,14 +277,20 @@ public class SurfaceTextureRenderer {
     private void drawFrame(SurfaceTexture st, int textureId, int width, int height,
             int flipType) throws LegacyExceptionUtils.BufferQueueAbandonedException {
         checkGlError("onDrawFrame start");
-        st.getTransformMatrix(mSTMatrix);
+        if (st != null) {
+            st.getTransformMatrix(mSTMatrix);
+        } else {
+            Matrix.setIdentityM(mSTMatrix, 0);
+            mSTMatrix[5] = -1;
+            mSTMatrix[13] = 1;
+        }
 
         Matrix.setIdentityM(mMVPMatrix, /*smOffset*/0);
 
         // Find intermediate buffer dimensions
         Size dimens;
         try {
-            dimens = LegacyCameraDevice.getTextureSize(st);
+            dimens = st == null ? mIonRecordingSize : LegacyCameraDevice.getTextureSize(st);
         } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
             // Should never hit this.
             throw new IllegalStateException("Surface abandoned, skipping drawFrame...", e);
@@ -443,10 +450,7 @@ public class SurfaceTextureRenderer {
             mSurfaceTexture.release();
         }
         mSurfaceTexture = null;
-        if (mRecordSurfaceTexture != null) {
-            mRecordSurfaceTexture.release();
-        }
-        mRecordSurfaceTexture = null;
+        destroyIonRecordingBridge();
         logRecordFrameCounts();
         mRecordSource = false;
         mLastTargetSurfaceIds = new ArrayList<>();
@@ -547,6 +551,7 @@ public class SurfaceTextureRenderer {
     }
 
     private void releaseEGLContext() {
+        destroyIonRecordingBridge();
         if (mEGLDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(mEGLDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE,
                     EGL14.EGL_NO_CONTEXT);
@@ -669,14 +674,25 @@ public class SurfaceTextureRenderer {
         return mSurfaceTexture;
     }
 
-    /**
-     * Return the second input texture, which the HAL1 recording stream feeds while it is the
-     * frame source.
-     *
-     * @return a {@link SurfaceTexture}, or {@code null} before the first configuration.
-     */
-    public SurfaceTexture getRecordSurfaceTexture() {
-        return mRecordSurfaceTexture;
+    /** Create the checked ION importer on the current GL context. */
+    public long createIonRecordingBridge(GLThreadManager manager, int width, int height) {
+        if (mIonRecordingBridge != 0) throw new IllegalStateException("Recording bridge active");
+        mIonRecordingSize = new Size(width, height);
+        mIonRecordingBridge = LegacyCameraDevice.nativeCreateIonRecordingBridge(manager,
+                width, height);
+        if (mIonRecordingBridge == 0) throw new IllegalStateException("ION importer unavailable");
+        setRecordSource(true);
+        return mIonRecordingBridge;
+    }
+
+    /** Destroy imported images before the EGL context that owns them. */
+    public void destroyIonRecordingBridge() {
+        if (mIonRecordingBridge != 0) {
+            LegacyCameraDevice.nativeDestroyIonRecordingBridge(mIonRecordingBridge);
+            mIonRecordingBridge = 0;
+        }
+        mIonRecordingSize = null;
+        setRecordSource(false);
     }
 
     /**
@@ -748,7 +764,6 @@ public class SurfaceTextureRenderer {
 
         initializeGLState();
         mSurfaceTexture = new SurfaceTexture(getTextureId());
-        mRecordSurfaceTexture = new SurfaceTexture(mRecordTextureID);
 
     }
 
@@ -759,8 +774,8 @@ public class SurfaceTextureRenderer {
      *
      * <p>
      * The frame source is the preview texture returned from {@link #getSurfaceTexture()},
-     * or, after {@code setRecordSource(true)}, the recording stream texture returned from
-     * {@link #getRecordSurfaceTexture()}. A frame from the texture that is not the source only
+     * or, after {@code setRecordSource(true)}, the HAL ION EGLImage ring.
+     * A preview frame received while recording only
      * releases its buffer. A recording frame that finds no queued request draws into the
      * targets of the last paired request with its own timestamp and completes no request, so
      * outputs receive every recording frame while results follow the request rate; that draw
@@ -783,66 +798,69 @@ public class SurfaceTextureRenderer {
 
         checkGlError("before updateTexImage");
 
-        SurfaceTexture st = recordFrame ? mRecordSurfaceTexture : mSurfaceTexture;
-        if (st == null) {
-            return;
-        }
-        st.updateTexImage();
+        SurfaceTexture st = recordFrame ? null : mSurfaceTexture;
+        if (recordFrame && (!mRecordSource || mIonRecordingBridge == 0)) return;
+        if (!recordFrame && st == null) return;
+        long timestamp;
         if (recordFrame) {
+            timestamp = LegacyCameraDevice.nativeBindIonRecordingFrame(mIonRecordingBridge,
+                    mRecordTextureID);
+            if (timestamp == 0) return;
             mLastRecordArrivalNs = System.nanoTime();
-        } else if (mRecordSource
-                && System.nanoTime() - mLastRecordArrivalNs > RECORD_STALL_NS) {
-            Log.w(TAG, "No recording frame for " + RECORD_STALL_NS / 1000000
-                    + " ms, drawing from preview");
-            setRecordSource(false);
-        }
-        if (recordFrame != mRecordSource) {
-            return;
+        } else {
+            st.updateTexImage();
+            if (mRecordSource && System.nanoTime() - mLastRecordArrivalNs > RECORD_STALL_NS) {
+                throw new IllegalStateException("HAL1 ION recording stream stalls");
+            }
+            if (mRecordSource) return;
+            timestamp = st.getTimestamp();
         }
         int textureId = recordFrame ? mRecordTextureID : mTextureID;
 
-        long timestamp = st.getTimestamp();
+        try {
+            Pair<RequestHolder, Long> captureHolder = targetCollector.previewCaptured(timestamp);
 
-        Pair<RequestHolder, Long> captureHolder = targetCollector.previewCaptured(timestamp);
-
-        // No preview request queued, drop frame.
-        if (captureHolder == null) {
-            if (recordFrame && !mLastTargetSurfaceIds.isEmpty()
-                    && timestamp - mLastPairedTimestamp < UNPAIRED_DRAW_WINDOW_NS) {
-                drawTargets(st, textureId, mLastTargetSurfaceIds, timestamp, /*request*/null,
-                        /*includeConversions*/false);
-                mUnpairedRecordFrames++;
+            // No preview request queued, drop frame.
+            if (captureHolder == null) {
+                if (recordFrame && !mLastTargetSurfaceIds.isEmpty()
+                        && timestamp - mLastPairedTimestamp < UNPAIRED_DRAW_WINDOW_NS) {
+                    drawTargets(st, textureId, mLastTargetSurfaceIds, timestamp, /*request*/null,
+                            /*includeConversions*/false);
+                    mUnpairedRecordFrames++;
+                    return;
+                }
+                if (recordFrame) {
+                    mDroppedRecordFrames++;
+                }
+                if (DEBUG) {
+                    Log.d(TAG, "Dropping preview frame.");
+                }
                 return;
             }
+
+            RequestHolder request = captureHolder.first;
+
+            Collection<Surface> targetSurfaces = request.getHolderTargets();
+
+            List<Long> targetSurfaceIds = new ArrayList<>();
+            try {
+                targetSurfaceIds = LegacyCameraDevice.getSurfaceIds(targetSurfaces);
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                Log.w(TAG, "Surface abandoned, dropping frame. ", e);
+                request.setOutputAbandoned();
+            }
+
+            drawTargets(st, textureId, targetSurfaceIds, captureHolder.second, request,
+                    /*includeConversions*/true);
             if (recordFrame) {
-                mDroppedRecordFrames++;
+                mLastTargetSurfaceIds = targetSurfaceIds;
+                mLastPairedTimestamp = timestamp;
+                mPairedRecordFrames++;
             }
-            if (DEBUG) {
-                Log.d(TAG, "Dropping preview frame.");
-            }
-            return;
+            targetCollector.previewProduced();
+        } finally {
+            if (recordFrame) LegacyCameraDevice.nativeIonRecordingFrameDrawn(mIonRecordingBridge);
         }
-
-        RequestHolder request = captureHolder.first;
-
-        Collection<Surface> targetSurfaces = request.getHolderTargets();
-
-        List<Long> targetSurfaceIds = new ArrayList<>();
-        try {
-            targetSurfaceIds = LegacyCameraDevice.getSurfaceIds(targetSurfaces);
-        } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
-            Log.w(TAG, "Surface abandoned, dropping frame. ", e);
-            request.setOutputAbandoned();
-        }
-
-        drawTargets(st, textureId, targetSurfaceIds, captureHolder.second, request,
-                /*includeConversions*/true);
-        if (recordFrame) {
-            mLastTargetSurfaceIds = targetSurfaceIds;
-            mLastPairedTimestamp = timestamp;
-            mPairedRecordFrames++;
-        }
-        targetCollector.previewProduced();
 
     }
 

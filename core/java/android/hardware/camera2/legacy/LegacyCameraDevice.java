@@ -904,6 +904,14 @@ public class LegacyCameraDevice implements AutoCloseable {
 
     private static native int nativeDisconnectSurface(Surface surface);
 
+    static native long nativeCreateIonRecordingBridge(GLThreadManager manager, int width,
+            int height);
+    static native int nativeStartIonRecordingStream(Camera camera, long bridge);
+    static native int nativeStopIonRecordingStream(Camera camera);
+    static native long nativeBindIonRecordingFrame(long bridge, int texture);
+    static native void nativeIonRecordingFrameDrawn(long bridge);
+    static native void nativeDestroyIonRecordingBridge(long bridge);
+
     private static native int nativeStartRecordingStream(Camera camera, Surface surface,
             int width, int height);
 
