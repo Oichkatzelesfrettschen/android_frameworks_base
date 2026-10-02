@@ -1113,8 +1113,10 @@ static void LegacyCameraDevice_nativeDestroyIonRecordingBridge(JNIEnv* env, jobj
 #if defined(LEGACY_CAMERA_ION_IMPORT)
     if (handle == 0) return;
     auto* bridge = reinterpret_cast<IonRecordingStreamBridge*>(handle);
-    bridge->destroyImages(env);
+    status_t error = bridge->destroyImages(env);
     bridge->decStrong(&kIonBridgeOwner);
+    if (error != NO_ERROR) jniThrowExceptionFmt(env, "java/lang/IllegalStateException",
+            "HAL1 ION recording teardown fails: %d", error);
 #endif
 }
 
