@@ -71,6 +71,11 @@ public class SurfaceTextureRenderer {
         int width;
         int height;
         boolean ionOutputFifo;
+        long outputProbeOriginNs;
+        long outputProbeOverflow;
+        long[] outputSwapCounts;
+        long[] outputSwapWallNs;
+        long[] outputSwapMaxWallNs;
     }
 
     private List<EGLSurfaceHolder> mSurfaces = new ArrayList<EGLSurfaceHolder>();
@@ -693,10 +698,11 @@ public class SurfaceTextureRenderer {
     public long createIonRecordingBridge(GLThreadManager manager, int width, int height) {
         if (mIonRecordingBridge != 0) throw new IllegalStateException("Recording bridge active");
         int fifoOutput = SystemProperties.getInt("debug.camera.ion.fifo_output", -1);
+        boolean outputProbe = SystemProperties.getBoolean("debug.camera.ion.stage_rates", false);
         if (fifoOutput >= mSurfaces.size()) {
             throw new IllegalArgumentException("ION FIFO output index exceeds GL output count");
         }
-        if (fifoOutput >= 0) {
+        if (fifoOutput >= 0 || outputProbe) {
             EGLSurface previousDraw = EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW);
             EGLSurface previousRead = EGL14.eglGetCurrentSurface(EGL14.EGL_READ);
             try {
@@ -734,6 +740,15 @@ public class SurfaceTextureRenderer {
         mIonRecordingBridge = LegacyCameraDevice.nativeCreateIonRecordingBridge(manager,
                 width, height);
         if (mIonRecordingBridge == 0) throw new IllegalStateException("ION importer unavailable");
+        if (outputProbe) {
+            for (EGLSurfaceHolder holder : mSurfaces) {
+                holder.outputProbeOriginNs = 0;
+                holder.outputProbeOverflow = 0;
+                holder.outputSwapCounts = new long[64];
+                holder.outputSwapWallNs = new long[64];
+                holder.outputSwapMaxWallNs = new long[64];
+            }
+        }
         return mIonRecordingBridge;
     }
 
@@ -745,12 +760,49 @@ public class SurfaceTextureRenderer {
             try {
                 LegacyCameraDevice.nativeDestroyIonRecordingBridge(bridge);
             } finally {
+                logOutputSwapCounts();
                 GLES20.glDeleteTextures(1, new int[] {mRecordTextureID}, 0);
                 mRecordTextureID = 0;
             }
         }
         mIonRecordingSize = null;
         setRecordSource(false);
+    }
+
+    // Successful swaps count queued output buffers; a fenced source lease can skip drawing.
+    private void recordOutputSwap(EGLSurfaceHolder holder, long startedNs) {
+        long completedNs = System.nanoTime();
+        if (holder.outputProbeOriginNs == 0) holder.outputProbeOriginNs = completedNs;
+        long second = (completedNs - holder.outputProbeOriginNs) / 1000000000L;
+        if (second >= holder.outputSwapCounts.length) {
+            holder.outputProbeOverflow++;
+            return;
+        }
+        int index = (int) second;
+        long wallNs = completedNs - startedNs;
+        holder.outputSwapCounts[index]++;
+        holder.outputSwapWallNs[index] += wallNs;
+        holder.outputSwapMaxWallNs[index] = Math.max(holder.outputSwapMaxWallNs[index], wallNs);
+    }
+
+    private void logOutputSwapCounts() {
+        for (int output = 0; output < mSurfaces.size(); output++) {
+            EGLSurfaceHolder holder = mSurfaces.get(output);
+            if (holder.outputSwapCounts == null) continue;
+            Log.i(TAG, "ION output stage index=" + output + " size=" + holder.width + "x"
+                    + holder.height + " origin_ns=" + holder.outputProbeOriginNs
+                    + " overflow=" + holder.outputProbeOverflow);
+            for (int second = 0; second < holder.outputSwapCounts.length; second++) {
+                if (holder.outputSwapCounts[second] == 0) continue;
+                Log.i(TAG, "ION output stage index=" + output + " second=" + second
+                        + " swaps=" + holder.outputSwapCounts[second]
+                        + " swap_wall_ns=" + holder.outputSwapWallNs[second]
+                        + " swap_max_wall_ns=" + holder.outputSwapMaxWallNs[second]);
+            }
+            holder.outputSwapCounts = null;
+            holder.outputSwapWallNs = null;
+            holder.outputSwapMaxWallNs = null;
+        }
     }
 
     /**
@@ -951,7 +1003,10 @@ public class SurfaceTextureRenderer {
                     drawFrame(st, textureId, holder.width, holder.height,
                             (mFacing == CameraCharacteristics.LENS_FACING_FRONT) ?
                                     FLIP_TYPE_HORIZONTAL : FLIP_TYPE_NONE);
+                    boolean outputProbe = st == null && holder.outputSwapCounts != null;
+                    long swapStartedNs = outputProbe ? System.nanoTime() : 0;
                     swapBuffers(holder.eglSurface);
+                    if (outputProbe) recordOutputSwap(holder, swapStartedNs);
                 } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
                     Log.w(TAG, "Surface abandoned, dropping frame. ", e);
                     if (request != null) {
