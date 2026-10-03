@@ -480,9 +480,8 @@ public class RequestThreadManager {
                 mGLThreadManager.setRecordSource(true);
                 Log.i(TAG, "Recording stream feeds the GL outputs at " + mGlRecordSize);
             } catch (LegacyExceptionUtils.BufferQueueAbandonedException | RuntimeException e) {
-                // The GL outputs stay on the preview stream at its rate.
-                Log.w(TAG, "Recording stream unavailable for the GL outputs", e);
                 mGlRecordStreamFailed = true;
+                throw new IllegalStateException("HAL1 CPU-copy recording stream unavailable", e);
             }
         } else if (!active && mGlRecordStreamRunning && repeating) {
             stopGlRecordStream();
