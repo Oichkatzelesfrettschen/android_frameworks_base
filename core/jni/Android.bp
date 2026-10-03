@@ -50,7 +50,10 @@ cc_library_shared_for_libandroid_runtime {
         "-Wno-unused-parameter",
         "-Wunused",
         "-Wunreachable-code",
-    ],
+    ] + select(soong_config_variable("camera", "legacy_hal1"), {
+        "true": ["-DLEGACY_CAMERA_ION_IMPORT"],
+        default: [],
+    }),
 
     cppflags: ["-Wno-conversion-null"],
 
@@ -515,4 +518,23 @@ cc_library_shared {
     required: [
         "vintf",
     ],
+}
+
+cc_test {
+    name: "legacy_camera_ion_egl_test",
+    srcs: ["tests/legacy_camera_ion_egl_test.cpp"],
+    local_include_dirs: ["."],
+    shared_libs: [
+        "libui",
+        "libutils",
+        "libcutils",
+        "liblog",
+        "libEGL",
+        "libGLESv2",
+    ],
+    cflags: ["-Wall", "-Wextra", "-Werror"],
+    cpp_std: "c++20",
+    compile_multilib: "32",
+    gtest: false,
+    test_suites: ["device-tests"],
 }
