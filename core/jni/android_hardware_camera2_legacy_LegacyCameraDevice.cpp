@@ -1128,8 +1128,15 @@ static jint LegacyCameraDevice_nativeDescribeIonOutput(JNIEnv* env, jobject,
     int usage = 0;
     status_t error = nativeSurface->query(NATIVE_WINDOW_CONSUMER_USAGE_BITS, &usage);
     if (error != NO_ERROR) return error;
+    int minimumUndequeued = 0;
+    error = nativeSurface->query(NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS, &minimumUndequeued);
+    if (error != NO_ERROR) return error;
+    int format = 0;
+    error = nativeSurface->query(NATIVE_WINDOW_FORMAT, &format);
+    if (error != NO_ERROR) return error;
     const String8 consumer = nativeSurface->getIGraphicBufferProducer()->getConsumerName();
-    ALOGI("ION GL output index=%d consumer=%s usage=0x%x", index, consumer.c_str(), usage);
+    ALOGI("ION GL output index=%d consumer=%s usage=0x%x format=0x%x min-undequeued=%d",
+          index, consumer.c_str(), usage, format, minimumUndequeued);
     return NO_ERROR;
 #else
     return INVALID_OPERATION;
@@ -1141,13 +1148,14 @@ static jint LegacyCameraDevice_nativeSetIonOutputFifo(JNIEnv* env, jobject,
 #if defined(LEGACY_CAMERA_ION_IMPORT)
     sp<Surface> nativeSurface = android_view_Surface_getSurface(env, surface);
     if (nativeSurface == nullptr) return BAD_VALUE;
-    // A positive timeout preserves queued frames; disconnect precedes default restoration.
-    status_t error = nativeSurface->setDequeueTimeout(enabled ? 100000000 : -1);
+    // BufferQueue retains blocking and nondroppable flags when the deadline becomes negative.
+    // Consumer abandonment wakes dequeue; EGL disconnect precedes default restoration.
+    status_t error = nativeSurface->setDequeueTimeout(enabled ? 1 : -1);
     if (error == NO_ERROR && enabled) {
         error = nativeSurface->getIGraphicBufferProducer()->setAsyncMode(false);
+        if (error == NO_ERROR) error = nativeSurface->setDequeueTimeout(-1);
     }
-    ALOGI("ION GL output FIFO enabled=%d timeout_ns=%d status=%d", enabled,
-            enabled ? 100000000 : -1, error);
+    ALOGI("ION GL output FIFO enabled=%d timeout_ns=-1 status=%d", enabled, error);
     return error;
 #else
     return INVALID_OPERATION;

@@ -107,7 +107,10 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
             }
             if (!mActive || frame == nullptr || mError != NO_ERROR ||
                 mPending.size() >= kQueueDepth || mHeld >= kHeldBudget) {
-                ++mDropped;
+                recordDrop(!mActive ? DropReason::Inactive : frame == nullptr ? DropReason::Null
+                        : mError != NO_ERROR ? DropReason::SessionError
+                        : mPending.size() >= kQueueDepth ? DropReason::PendingFull
+                        : DropReason::HeldFull);
                 queueRelease({camera, frame, nullptr}, EGL_NO_SYNC_KHR);
             } else {
                 const IBinder* key = IInterface::asBinder(frame).get();
@@ -131,7 +134,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
                                     "HAL1 recording buffer reused before GPU ownership returns");
                 if (found == mSlots.end()) {
                     mError = BAD_VALUE;
-                    ++mDropped;
+                    recordDrop(DropReason::Import);
                     ALOGE("ION recording pool/layout/ownership validation failed");
                     queueRelease({camera, frame, nullptr}, EGL_NO_SYNC_KHR);
                 } else {
@@ -235,6 +238,11 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
               " held-peak=%zu CPU-copy=0",
               mWidth, mHeight, mReceived, mBound, mReturned, mDropped, mImages, mFenceErrors,
               mHeldPeak);
+        ALOGI("ION recording drop causes inactive=%" PRIu64 " null=%" PRIu64
+              " session-error=%" PRIu64 " pending-full=%" PRIu64 " held-full=%" PRIu64
+              " import=%" PRIu64,
+              mDropCauses[0], mDropCauses[1], mDropCauses[2], mDropCauses[3],
+              mDropCauses[4], mDropCauses[5]);
         if (mStageRatesEnabled) {
             ALOGI("ION recording stage origin_ns=%" PRId64 " overflow=%" PRIu64,
                   mStageOriginNs, mStageOverflow);
@@ -242,9 +250,10 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
                 const StageInterval& interval = mStageIntervals[index];
                 if (interval.received || interval.bound || interval.drawn || interval.returned) {
                     ALOGI("ION recording stage second=%zu received=%" PRIu64
-                          " bound=%" PRIu64 " drawn=%" PRIu64 " returned=%" PRIu64,
+                          " bound=%" PRIu64 " drawn=%" PRIu64 " returned=%" PRIu64
+                          " dropped=%" PRIu64,
                           index, interval.received, interval.bound, interval.drawn,
-                          interval.returned);
+                          interval.returned, interval.dropped);
                 }
             }
         }
@@ -276,7 +285,15 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
         uint64_t bound = 0;
         uint64_t drawn = 0;
         uint64_t returned = 0;
+        uint64_t dropped = 0;
     };
+    enum class DropReason { Inactive, Null, SessionError, PendingFull, HeldFull, Import };
+    // Ordered causes classify each rejected callback once under mLock.
+    void recordDrop(DropReason reason) {
+        ++mDropped;
+        ++mDropCauses[static_cast<size_t>(reason)];
+        if (StageInterval* interval = stageInterval()) ++interval->dropped;
+    }
     // Session-local buckets count event arrival rather than sensor timestamps.
     // The closure log reports overflow when a diagnostic exceeds the retained window.
     StageInterval* stageInterval() {
@@ -376,6 +393,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
     uint64_t mBound = 0;
     uint64_t mReturned = 0;
     uint64_t mDropped = 0;
+    std::array<uint64_t, 6> mDropCauses{};
     uint64_t mImages = 0;
     uint64_t mFenceErrors = 0;
     size_t mHeld = 0;
