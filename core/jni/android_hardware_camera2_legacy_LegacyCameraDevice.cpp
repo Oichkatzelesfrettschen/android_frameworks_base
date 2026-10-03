@@ -1154,6 +1154,18 @@ static jint LegacyCameraDevice_nativeSetIonOutputFifo(JNIEnv* env, jobject,
 #endif
 }
 
+static jint LegacyCameraDevice_nativeDiscardIonPreviewFrame(JNIEnv* env, jobject,
+        jobject texture) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    if (texture == nullptr) return BAD_VALUE;
+    sp<SurfaceTexture> nativeTexture = SurfaceTexture_getSurfaceTexture(env, texture);
+    if (nativeTexture == nullptr) return NO_INIT;
+    return nativeTexture->discardNextBuffer();
+#else
+    return INVALID_OPERATION;
+#endif
+}
+
 static jint LegacyCameraDevice_nativeGetJpegFooterSize(JNIEnv* env, jobject thiz) {
     ALOGV("nativeGetJpegFooterSize");
     return static_cast<jint>(sizeof(struct camera3_jpeg_blob));
@@ -1178,6 +1190,8 @@ static const JNINativeMethod gCameraDeviceMethods[] = {
       (void *)LegacyCameraDevice_nativeIonRecordingFrameDrawn },
     { "nativeDestroyIonRecordingBridge", "(J)V",
       (void *)LegacyCameraDevice_nativeDestroyIonRecordingBridge },
+    { "nativeDiscardIonPreviewFrame", "(Landroid/graphics/SurfaceTexture;)I",
+      (void *)LegacyCameraDevice_nativeDiscardIonPreviewFrame },
     { "nativeConnectSurface",
     "(Landroid/view/Surface;)I",
     (void *)LegacyCameraDevice_nativeConnectSurface },
