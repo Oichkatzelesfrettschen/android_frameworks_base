@@ -27,6 +27,7 @@ import android.opengl.EGLSurface;
 import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
 import android.opengl.Matrix;
+import android.os.SystemProperties;
 import android.util.Log;
 import android.util.Pair;
 import android.util.Size;
@@ -69,6 +70,7 @@ public class SurfaceTextureRenderer {
         EGLSurface eglSurface;
         int width;
         int height;
+        boolean ionOutputFifo;
     }
 
     private List<EGLSurfaceHolder> mSurfaces = new ArrayList<EGLSurfaceHolder>();
@@ -562,6 +564,16 @@ public class SurfaceTextureRenderer {
                     if (holder.eglSurface != null) {
                         EGL14.eglDestroySurface(mEGLDisplay, holder.eglSurface);
                     }
+                    if (holder.ionOutputFifo) {
+                        holder.ionOutputFifo = false;
+                        try {
+                            LegacyExceptionUtils.throwOnError(
+                                    LegacyCameraDevice.nativeSetIonOutputFifo(
+                                            holder.surface, false));
+                        } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                            Log.w(TAG, "ION FIFO output abandoned after EGL disconnect", e);
+                        }
+                    }
                 }
             }
             if (mConversionSurfaces != null) {
@@ -679,6 +691,38 @@ public class SurfaceTextureRenderer {
     /** Create the checked ION importer on the current GL context. */
     public long createIonRecordingBridge(GLThreadManager manager, int width, int height) {
         if (mIonRecordingBridge != 0) throw new IllegalStateException("Recording bridge active");
+        int fifoOutput = SystemProperties.getInt("debug.camera.ion.fifo_output", -1);
+        if (fifoOutput >= mSurfaces.size()) {
+            throw new IllegalArgumentException("ION FIFO output index exceeds GL output count");
+        }
+        if (fifoOutput >= 0) {
+            EGLSurface previousDraw = EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW);
+            EGLSurface previousRead = EGL14.eglGetCurrentSurface(EGL14.EGL_READ);
+            try {
+                for (int index = 0; index < mSurfaces.size(); index++) {
+                    EGLSurfaceHolder holder = mSurfaces.get(index);
+                    LegacyExceptionUtils.throwOnError(
+                            LegacyCameraDevice.nativeDescribeIonOutput(holder.surface, index));
+                    Log.i(TAG, "ION GL output index=" + index + " size="
+                            + holder.width + "x" + holder.height);
+                    if (index == fifoOutput) {
+                        makeCurrent(holder.eglSurface);
+                        if (!EGL14.eglSwapInterval(mEGLDisplay, 1)) {
+                            throw new IllegalStateException("ION FIFO swap interval rejected");
+                        }
+                        holder.ionOutputFifo = true;
+                        LegacyExceptionUtils.throwOnError(
+                                LegacyCameraDevice.nativeSetIonOutputFifo(holder.surface, true));
+                    }
+                }
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                throw new IllegalStateException("ION FIFO output abandoned", e);
+            } finally {
+                if (!EGL14.eglMakeCurrent(mEGLDisplay, previousDraw, previousRead, mEGLContext)) {
+                    throw new IllegalStateException("ION output diagnostic context restore fails");
+                }
+            }
+        }
         if (mRecordTextureID == 0) {
             int[] texture = new int[1];
             GLES20.glGenTextures(1, texture, 0);
