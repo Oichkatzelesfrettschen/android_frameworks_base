@@ -38,6 +38,8 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Map;
 import java.util.List;
 
 /**
@@ -71,6 +73,7 @@ public class SurfaceTextureRenderer {
         int width;
         int height;
         boolean ionOutputFifo;
+        long streamUseCase;
         long outputProbeOriginNs;
         long outputProbeOverflow;
         long outputSwapRejected;
@@ -700,8 +703,8 @@ public class SurfaceTextureRenderer {
     /** Create the checked ION importer on the current GL context. */
     public long createIonRecordingBridge(GLThreadManager manager, int width, int height) {
         if (mIonRecordingBridge != 0) throw new IllegalStateException("Recording bridge active");
-        // App-controlled texture consumers share HW_TEXTURE usage; every ION output
-        // preserves queued frames so each downstream branch applies backpressure.
+        // Stream use cases identify downstream purpose behind HW_TEXTURE consumers.
+        // Recording preserves frames; preview keeps the latest viewfinder image.
         int fifoOutput = SystemProperties.getInt("debug.camera.ion.fifo_output", -2);
         boolean outputProbe = SystemProperties.getBoolean("debug.camera.ion.stage_rates", false);
         if (fifoOutput < -2 || fifoOutput >= mSurfaces.size()) {
@@ -716,8 +719,9 @@ public class SurfaceTextureRenderer {
                     LegacyExceptionUtils.throwOnError(
                             LegacyCameraDevice.nativeDescribeIonOutput(holder.surface, index));
                     Log.i(TAG, "ION GL output index=" + index + " size="
-                            + holder.width + "x" + holder.height);
-                    if (fifoOutput == -2 || index == fifoOutput) {
+                            + holder.width + "x" + holder.height + " stream-use-case="
+                            + holder.streamUseCase);
+                    if (LegacyStreamUseCase.usesFifo(holder.streamUseCase, fifoOutput, index)) {
                         makeCurrent(holder.eglSurface);
                         if (!EGL14.eglSwapInterval(mEGLDisplay, 1)) {
                             throw new IllegalStateException("ION FIFO swap interval rejected");
@@ -849,6 +853,11 @@ public class SurfaceTextureRenderer {
      * @param surfaces a {@link Collection} of surfaces.
      */
     public void configureSurfaces(Collection<Pair<Surface, Size>> surfaces) {
+        configureSurfaces(surfaces, Collections.emptyMap());
+    }
+
+    public void configureSurfaces(Collection<Pair<Surface, Size>> surfaces,
+            Map<Surface, Long> streamUseCases) {
         releaseEGLContext();
 
         if (surfaces == null || surfaces.size() == 0) {
@@ -863,6 +872,8 @@ public class SurfaceTextureRenderer {
             try {
                 EGLSurfaceHolder holder = new EGLSurfaceHolder();
                 holder.surface = s;
+                holder.streamUseCase = streamUseCases.getOrDefault(s,
+                        LegacyStreamUseCase.DEFAULT);
                 holder.width = surfaceSize.getWidth();
                 holder.height = surfaceSize.getHeight();
                 if (LegacyCameraDevice.needsConversion(s)) {

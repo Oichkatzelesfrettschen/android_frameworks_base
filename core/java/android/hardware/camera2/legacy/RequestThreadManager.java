@@ -41,6 +41,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -146,11 +147,13 @@ public class RequestThreadManager {
     private static class ConfigureHolder {
         public final ConditionVariable condition;
         public final Collection<Pair<Surface, Size>> surfaces;
+        public final Map<Surface, Long> streamUseCases;
 
         public ConfigureHolder(ConditionVariable condition, Collection<Pair<Surface,
-                Size>> surfaces) {
+                Size>> surfaces, Map<Surface, Long> streamUseCases) {
             this.condition = condition;
             this.surfaces = surfaces;
+            this.streamUseCases = Map.copyOf(streamUseCases);
         }
     }
 
@@ -551,7 +554,8 @@ public class RequestThreadManager {
         }
     }
 
-    private void configureOutputs(Collection<Pair<Surface, Size>> outputs) {
+    private void configureOutputs(Collection<Pair<Surface, Size>> outputs,
+            Map<Surface, Long> streamUseCases) {
         if (DEBUG) {
             String outputsStr = outputs == null ? "null" : (outputs.size() + " surfaces");
             Log.d(TAG, "configureOutputs with " + outputsStr);
@@ -776,7 +780,7 @@ public class RequestThreadManager {
         for (Surface p : mPreviewOutputs) {
             previews.add(new Pair<>(p, previewSizeIter.next()));
         }
-        mGLThreadManager.setConfigurationAndWait(previews, mCaptureCollector);
+        mGLThreadManager.setConfigurationAndWait(previews, mCaptureCollector, streamUseCases);
 
         for (Surface p : mPreviewOutputs) {
             try {
@@ -983,7 +987,7 @@ public class RequestThreadManager {
                         break;
                     }
 
-                    configureOutputs(config.surfaces);
+                    configureOutputs(config.surfaces, config.streamUseCases);
                     config.condition.open();
                     if (DEBUG) {
                         long totalTime = SystemClock.elapsedRealtimeNanos() - startTime;
@@ -1399,9 +1403,14 @@ public class RequestThreadManager {
      * @param outputs a {@link java.util.Collection} of outputs to configure.
      */
     public void configure(Collection<Pair<Surface, Size>> outputs) {
+        configure(outputs, Collections.emptyMap());
+    }
+
+    public void configure(Collection<Pair<Surface, Size>> outputs,
+            Map<Surface, Long> streamUseCases) {
         Handler handler = mRequestThread.waitAndGetHandler();
         final ConditionVariable condition = new ConditionVariable(/*closed*/false);
-        ConfigureHolder holder = new ConfigureHolder(condition, outputs);
+        ConfigureHolder holder = new ConfigureHolder(condition, outputs, streamUseCases);
         handler.sendMessage(handler.obtainMessage(MSG_CONFIGURE_OUTPUTS, 0, 0, holder));
         condition.block();
     }
