@@ -89,6 +89,7 @@ public class SurfaceTextureRenderer {
     private long mIonRecordingBridge;
     private Size mIonRecordingSize;
     private boolean mRecordSource = false;
+    private boolean mDiscardPreviewFrames;
     private List<Long> mLastTargetSurfaceIds = new ArrayList<>();
     private long mLastPairedTimestamp = 0;
     private long mLastRecordArrivalNs = 0;
@@ -759,6 +760,8 @@ public class SurfaceTextureRenderer {
     public void setRecordSource(boolean record) {
         logRecordFrameCounts();
         mRecordSource = record;
+        mDiscardPreviewFrames = record
+                && SystemProperties.getBoolean("debug.camera.ion.discard_preview", false);
         mLastTargetSurfaceIds = new ArrayList<>();
         mLastPairedTimestamp = 0;
         mLastRecordArrivalNs = System.nanoTime();
@@ -865,7 +868,14 @@ public class SurfaceTextureRenderer {
             if (timestamp == 0) return;
             mLastRecordArrivalNs = System.nanoTime();
         } else {
-            st.updateTexImage();
+            if (mDiscardPreviewFrames) {
+                int status = LegacyCameraDevice.nativeDiscardIonPreviewFrame(st);
+                if (status < 0) {
+                    throw new IllegalStateException("Unused HAL1 preview discard fails: " + status);
+                }
+            } else {
+                st.updateTexImage();
+            }
             if (mRecordSource && System.nanoTime() - mLastRecordArrivalNs > RECORD_STALL_NS) {
                 throw new IllegalStateException("HAL1 ION recording stream stalls");
             }
