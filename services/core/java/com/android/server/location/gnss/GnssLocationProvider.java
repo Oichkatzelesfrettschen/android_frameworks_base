@@ -299,6 +299,12 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
     private final Set<Integer> mPendingDownloadPsdsTypes = new HashSet<>();
     @GuardedBy("mLock")
     private final Set<Integer> mDownloadInProgressPsdsTypes = new HashSet<>();
+    // GnssPsdsDownloader advances its long-term server index after every attempt, so one
+    // instance per server list sends a HAL re-request after a rejected file to the next
+    // server. mDownloadInProgressPsdsTypes serializes long-term downloads under mLock, which
+    // orders each index update before the next download reads it.
+    @GuardedBy("mLock")
+    private GnssPsdsDownloader mPsdsDownloader;
 
     /**
      * Properties loaded from PROPERTIES_FILE.
@@ -800,8 +806,7 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
         }
         Log.i(TAG, "WakeLock acquired by handleDownloadPsdsData()");
         Executors.newSingleThreadExecutor().execute(() -> {
-            GnssPsdsDownloader psdsDownloader = new GnssPsdsDownloader(
-                    mGnssConfiguration.getProperties());
+            GnssPsdsDownloader psdsDownloader = getPsdsDownloader();
             byte[] data = psdsDownloader.downloadPsdsData(psdsType);
             if (data != null) {
                 mHandler.post(() -> {
@@ -849,6 +854,18 @@ public class GnssLocationProvider extends AbstractLocationProvider implements
                 mDownloadInProgressPsdsTypes.remove(psdsType);
             }
         });
+    }
+
+    /** Returns the downloader for the configured servers, keeping its index across requests. */
+    private GnssPsdsDownloader getPsdsDownloader() {
+        GnssPsdsDownloader configured = new GnssPsdsDownloader(
+                mGnssConfiguration.getProperties());
+        synchronized (mLock) {
+            if (mPsdsDownloader == null || !mPsdsDownloader.hasSameServers(configured)) {
+                mPsdsDownloader = configured;
+            }
+            return mPsdsDownloader;
+        }
     }
 
     private void injectLocation(Location location) {
