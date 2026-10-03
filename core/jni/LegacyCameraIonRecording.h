@@ -6,6 +6,7 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <android_runtime/AndroidRuntime.h>
+#include <cutils/properties.h>
 
 #include <algorithm>
 #include <condition_variable>
@@ -78,6 +79,29 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
         {
             std::lock_guard<std::mutex> lock(mLock);
             ++mReceived;
+            if (mReceived == 120 && frame != nullptr &&
+                property_get_bool("debug.camera.ion.probe", false)) {
+                const auto* pixels = static_cast<const uint8_t*>(frame->unsecurePointer());
+                if (pixels != nullptr && frame->size() == mImporter.allocationSize()) {
+                    const size_t stride = (mWidth + 127u) & ~127u;
+                    ssize_t offset = 0;
+                    size_t size = 0;
+                    sp<IMemoryHeap> heap = frame->getMemory(&offset, &size);
+                    char descriptorPath[64];
+                    char descriptorTarget[128] = "unresolved";
+                    if (heap != nullptr) {
+                        snprintf(descriptorPath, sizeof(descriptorPath), "/proc/self/fd/%d",
+                                 heap->getHeapID());
+                        const ssize_t length = readlink(descriptorPath, descriptorTarget,
+                                                        sizeof(descriptorTarget) - 1);
+                        if (length >= 0) descriptorTarget[length] = '\0';
+                    }
+                    ALOGI("ION recording source probe Y=%u,%u,%u,%u bytes=%zu fd=%s",
+                          pixels[0], pixels[mWidth / 2], pixels[(mHeight / 2) * stride],
+                          pixels[(mHeight / 2) * stride + mWidth / 2], frame->size(),
+                          descriptorTarget);
+                }
+            }
             if (!mActive || frame == nullptr || mError != NO_ERROR ||
                 mPending.size() >= kQueueDepth || mHeld >= kHeldBudget) {
                 ++mDropped;
