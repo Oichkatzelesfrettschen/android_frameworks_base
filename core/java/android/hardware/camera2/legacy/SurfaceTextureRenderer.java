@@ -73,6 +73,7 @@ public class SurfaceTextureRenderer {
         boolean ionOutputFifo;
         long outputProbeOriginNs;
         long outputProbeOverflow;
+        long outputSwapRejected;
         long[] outputSwapCounts;
         long[] outputSwapWallNs;
         long[] outputSwapMaxWallNs;
@@ -744,6 +745,7 @@ public class SurfaceTextureRenderer {
             for (EGLSurfaceHolder holder : mSurfaces) {
                 holder.outputProbeOriginNs = 0;
                 holder.outputProbeOverflow = 0;
+                holder.outputSwapRejected = 0;
                 holder.outputSwapCounts = new long[64];
                 holder.outputSwapWallNs = new long[64];
                 holder.outputSwapMaxWallNs = new long[64];
@@ -791,7 +793,8 @@ public class SurfaceTextureRenderer {
             if (holder.outputSwapCounts == null) continue;
             Log.i(TAG, "ION output stage index=" + output + " size=" + holder.width + "x"
                     + holder.height + " origin_ns=" + holder.outputProbeOriginNs
-                    + " overflow=" + holder.outputProbeOverflow);
+                    + " overflow=" + holder.outputProbeOverflow
+                    + " rejected=" + holder.outputSwapRejected);
             for (int second = 0; second < holder.outputSwapCounts.length; second++) {
                 if (holder.outputSwapCounts[second] == 0) continue;
                 Log.i(TAG, "ION output stage index=" + output + " second=" + second
@@ -1005,8 +1008,11 @@ public class SurfaceTextureRenderer {
                                     FLIP_TYPE_HORIZONTAL : FLIP_TYPE_NONE);
                     boolean outputProbe = st == null && holder.outputSwapCounts != null;
                     long swapStartedNs = outputProbe ? System.nanoTime() : 0;
-                    swapBuffers(holder.eglSurface);
-                    if (outputProbe) recordOutputSwap(holder, swapStartedNs);
+                    boolean swapped = swapBuffers(holder.eglSurface);
+                    if (outputProbe) {
+                        if (swapped) recordOutputSwap(holder, swapStartedNs);
+                        else holder.outputSwapRejected++;
+                    }
                 } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
                     Log.w(TAG, "Surface abandoned, dropping frame. ", e);
                     if (request != null) {
