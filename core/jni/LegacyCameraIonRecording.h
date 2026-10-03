@@ -7,8 +7,10 @@
 #include <GLES2/gl2ext.h>
 #include <android_runtime/AndroidRuntime.h>
 #include <cutils/properties.h>
+#include <utils/Timers.h>
 
 #include <algorithm>
+#include <array>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -79,6 +81,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
         {
             std::lock_guard<std::mutex> lock(mLock);
             ++mReceived;
+            if (StageInterval* interval = stageInterval()) ++interval->received;
             if (mReceived == 120 && frame != nullptr &&
                 property_get_bool("debug.camera.ion.probe", false)) {
                 const auto* pixels = static_cast<const uint8_t*>(frame->unsecurePointer());
@@ -176,6 +179,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
             return mError;
         }
         ++mBound;
+        if (StageInterval* interval = stageInterval()) ++interval->bound;
         if (!mPending.empty()) notifyFrame();
         return mDrawing.timestamp;
     }
@@ -193,6 +197,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
             mError = INVALID_OPERATION;
             ALOGE("ION recording EGL completion fence creation fails 0x%x", eglGetError());
         }
+        if (StageInterval* interval = stageInterval()) ++interval->drawn;
         queueRelease(mDrawing, sync);
         mDrawing = {};
         mDrawIdle.notify_all();
@@ -230,6 +235,19 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
               " held-peak=%zu CPU-copy=0",
               mWidth, mHeight, mReceived, mBound, mReturned, mDropped, mImages, mFenceErrors,
               mHeldPeak);
+        if (mStageRatesEnabled) {
+            ALOGI("ION recording stage origin_ns=%" PRId64 " overflow=%" PRIu64,
+                  mStageOriginNs, mStageOverflow);
+            for (size_t index = 0; index < mStageIntervals.size(); ++index) {
+                const StageInterval& interval = mStageIntervals[index];
+                if (interval.received || interval.bound || interval.drawn || interval.returned) {
+                    ALOGI("ION recording stage second=%zu received=%" PRIu64
+                          " bound=%" PRIu64 " drawn=%" PRIu64 " returned=%" PRIu64,
+                          index, interval.received, interval.bound, interval.drawn,
+                          interval.returned);
+                }
+            }
+        }
         return mError;
     }
 
@@ -253,6 +271,24 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
         Frame frame;
         EGLSyncKHR fence = EGL_NO_SYNC_KHR;
     };
+    struct StageInterval {
+        uint64_t received = 0;
+        uint64_t bound = 0;
+        uint64_t drawn = 0;
+        uint64_t returned = 0;
+    };
+    // Session-local buckets count event arrival rather than sensor timestamps.
+    // The closure log reports overflow when a diagnostic exceeds the retained window.
+    StageInterval* stageInterval() {
+        if (!mStageRatesEnabled) return nullptr;
+        const size_t index = static_cast<size_t>(
+                (systemTime(SYSTEM_TIME_MONOTONIC) - mStageOriginNs) / 1000000000);
+        if (index >= mStageIntervals.size()) {
+            ++mStageOverflow;
+            return nullptr;
+        }
+        return &mStageIntervals[index];
+    }
     void notifyFrame() {
         JNIEnv* env = AndroidRuntime::getJNIEnv();
         if (mManager != nullptr && env != nullptr) env->CallVoidMethod(mManager, mNotify);
@@ -310,6 +346,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
             {
                 std::lock_guard<std::mutex> lock(mLock);
                 ++mReturned;
+                if (StageInterval* interval = stageInterval()) ++interval->returned;
             }
             next = {};
             releaseLock.lock();
@@ -331,6 +368,10 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
     Frame mDrawing;
     bool mActive = true;
     status_t mError = NO_ERROR;
+    const bool mStageRatesEnabled = property_get_bool("debug.camera.ion.stage_rates", false);
+    const nsecs_t mStageOriginNs = mStageRatesEnabled ? systemTime(SYSTEM_TIME_MONOTONIC) : 0;
+    std::array<StageInterval, 120> mStageIntervals{};
+    uint64_t mStageOverflow = 0;
     uint64_t mReceived = 0;
     uint64_t mBound = 0;
     uint64_t mReturned = 0;
