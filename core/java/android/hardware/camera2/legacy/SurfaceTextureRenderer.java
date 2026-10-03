@@ -920,6 +920,9 @@ public class SurfaceTextureRenderer {
         if (recordFrame) {
             timestamp = LegacyCameraDevice.nativeBindIonRecordingFrame(mIonRecordingBridge,
                     mRecordTextureID);
+            if (timestamp < 0) {
+                throw new IllegalStateException("HAL1 ION recording bind fails: " + timestamp);
+            }
             if (timestamp == 0) return;
             mLastRecordArrivalNs = System.nanoTime();
         } else {
