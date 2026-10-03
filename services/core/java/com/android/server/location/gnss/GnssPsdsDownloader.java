@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Arrays;
 import java.util.Properties;
 import java.util.Random;
 import java.util.concurrent.TimeUnit;
@@ -93,6 +94,12 @@ class GnssPsdsDownloader {
         mPsdsServers = new String[MAX_PSDS_TYPE_INDEX + 1];
         mPsdsServers[NORMAL_PSDS_SERVER_INDEX] = normalPsdsServer;
         mPsdsServers[REALTIME_PSDS_SERVER_INDEX] = realtimePsdsServer;
+    }
+
+    /** Returns true when {@code other} names the same servers in the same order. */
+    boolean hasSameServers(GnssPsdsDownloader other) {
+        return Arrays.equals(mLongTermPsdsServers, other.mLongTermPsdsServers)
+                && Arrays.equals(mPsdsServers, other.mPsdsServers);
     }
 
     @Nullable
