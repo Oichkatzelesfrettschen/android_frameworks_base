@@ -698,12 +698,14 @@ public class SurfaceTextureRenderer {
     /** Create the checked ION importer on the current GL context. */
     public long createIonRecordingBridge(GLThreadManager manager, int width, int height) {
         if (mIonRecordingBridge != 0) throw new IllegalStateException("Recording bridge active");
-        int fifoOutput = SystemProperties.getInt("debug.camera.ion.fifo_output", -1);
+        // App-controlled texture consumers share HW_TEXTURE usage; every ION output
+        // preserves queued frames so each downstream branch applies backpressure.
+        int fifoOutput = SystemProperties.getInt("debug.camera.ion.fifo_output", -2);
         boolean outputProbe = SystemProperties.getBoolean("debug.camera.ion.stage_rates", false);
-        if (fifoOutput >= mSurfaces.size()) {
+        if (fifoOutput < -2 || fifoOutput >= mSurfaces.size()) {
             throw new IllegalArgumentException("ION FIFO output index exceeds GL output count");
         }
-        if (fifoOutput >= 0 || outputProbe) {
+        if (fifoOutput == -2 || fifoOutput >= 0 || outputProbe) {
             EGLSurface previousDraw = EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW);
             EGLSurface previousRead = EGL14.eglGetCurrentSurface(EGL14.EGL_READ);
             try {
@@ -713,7 +715,7 @@ public class SurfaceTextureRenderer {
                             LegacyCameraDevice.nativeDescribeIonOutput(holder.surface, index));
                     Log.i(TAG, "ION GL output index=" + index + " size="
                             + holder.width + "x" + holder.height);
-                    if (index == fifoOutput) {
+                    if (fifoOutput == -2 || index == fifoOutput) {
                         makeCurrent(holder.eglSurface);
                         if (!EGL14.eglSwapInterval(mEGLDisplay, 1)) {
                             throw new IllegalStateException("ION FIFO swap interval rejected");
