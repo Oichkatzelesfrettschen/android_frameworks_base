@@ -275,6 +275,11 @@ public class GLThreadManager {
         });
     }
 
+    /** Disconnect terminal outputs from the request thread to wake blocked GL dequeues. */
+    public void disconnectIonOutputQueues() {
+        mTextureRenderer.disconnectIonOutputQueues();
+    }
+
     /** Finish queued draws before stopping the HAL recording pool. */
     public void stopIonRecordingDraws() {
         runOnGlAndWait(() -> mTextureRenderer.setRecordSource(false));
