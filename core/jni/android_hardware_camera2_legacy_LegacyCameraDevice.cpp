@@ -1143,6 +1143,9 @@ static jint LegacyCameraDevice_nativeSetIonOutputFifo(JNIEnv* env, jobject,
     if (nativeSurface == nullptr) return BAD_VALUE;
     // A positive timeout preserves queued frames; disconnect precedes default restoration.
     status_t error = nativeSurface->setDequeueTimeout(enabled ? 100000000 : -1);
+    if (error == NO_ERROR && enabled) {
+        error = nativeSurface->getIGraphicBufferProducer()->setAsyncMode(false);
+    }
     ALOGI("ION GL output FIFO enabled=%d timeout_ns=%d status=%d", enabled,
             enabled ? 100000000 : -1, error);
     return error;
