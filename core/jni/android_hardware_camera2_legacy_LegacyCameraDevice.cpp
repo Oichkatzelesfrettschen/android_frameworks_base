@@ -1143,6 +1143,18 @@ static jint LegacyCameraDevice_nativeDescribeIonOutput(JNIEnv* env, jobject,
 #endif
 }
 
+static jint LegacyCameraDevice_nativeDisconnectIonOutput(JNIEnv* env, jobject,
+        jobject surface) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    sp<Surface> nativeSurface = android_view_Surface_getSurface(env, surface);
+    if (nativeSurface == nullptr) return BAD_VALUE;
+    // Terminal cleanup cancels producer waits before joining the GL thread.
+    return nativeSurface->disconnect(NATIVE_WINDOW_API_EGL);
+#else
+    return INVALID_OPERATION;
+#endif
+}
+
 static jint LegacyCameraDevice_nativeSetIonOutputFifo(JNIEnv* env, jobject,
         jobject surface, jboolean enabled) {
 #if defined(LEGACY_CAMERA_ION_IMPORT)
@@ -1186,6 +1198,8 @@ static const JNINativeMethod gCameraDeviceMethods[] = {
       (void *)LegacyCameraDevice_nativeDescribeIonOutput },
     { "nativeSetIonOutputFifo", "(Landroid/view/Surface;Z)I",
       (void *)LegacyCameraDevice_nativeSetIonOutputFifo },
+    { "nativeDisconnectIonOutput", "(Landroid/view/Surface;)I",
+      (void *)LegacyCameraDevice_nativeDisconnectIonOutput },
     { "nativeCreateIonRecordingBridge", "(Landroid/hardware/camera2/legacy/GLThreadManager;II)J",
       (void *)LegacyCameraDevice_nativeCreateIonRecordingBridge },
     { "nativeStartIonRecordingStream", "(Landroid/hardware/Camera;J)I",

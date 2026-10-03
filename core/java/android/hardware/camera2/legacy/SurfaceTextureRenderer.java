@@ -80,6 +80,7 @@ public class SurfaceTextureRenderer {
     }
 
     private List<EGLSurfaceHolder> mSurfaces = new ArrayList<EGLSurfaceHolder>();
+    private volatile Surface[] mIonFifoOutputs = new Surface[0];
     private List<EGLSurfaceHolder> mConversionSurfaces = new ArrayList<EGLSurfaceHolder>();
 
     private ByteBuffer mPBufferPixels;
@@ -447,6 +448,7 @@ public class SurfaceTextureRenderer {
     }
 
     private void clearState() {
+        mIonFifoOutputs = new Surface[0];
         mSurfaces.clear();
         for (EGLSurfaceHolder holder : mConversionSurfaces) {
             try {
@@ -721,6 +723,11 @@ public class SurfaceTextureRenderer {
                             throw new IllegalStateException("ION FIFO swap interval rejected");
                         }
                         holder.ionOutputFifo = true;
+                        List<Surface> fifoSurfaces = new ArrayList<>();
+                        for (EGLSurfaceHolder output : mSurfaces) {
+                            if (output.ionOutputFifo) fifoSurfaces.add(output.surface);
+                        }
+                        mIonFifoOutputs = fifoSurfaces.toArray(new Surface[0]);
                         LegacyExceptionUtils.throwOnError(
                                 LegacyCameraDevice.nativeSetIonOutputFifo(holder.surface, true));
                     }
@@ -754,6 +761,18 @@ public class SurfaceTextureRenderer {
             }
         }
         return mIonRecordingBridge;
+    }
+
+    /** Cancel terminal output waits before the request thread joins the GL thread. */
+    public void disconnectIonOutputQueues() {
+        for (Surface surface : mIonFifoOutputs) {
+            try {
+                LegacyExceptionUtils.throwOnError(
+                        LegacyCameraDevice.nativeDisconnectIonOutput(surface));
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException exception) {
+                Log.w(TAG, "ION terminal output already disconnected", exception);
+            }
+        }
     }
 
     /** Destroy imported images before the EGL context that owns them. */

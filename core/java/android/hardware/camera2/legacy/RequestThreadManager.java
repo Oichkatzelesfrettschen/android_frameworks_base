@@ -1251,6 +1251,9 @@ public class RequestThreadManager {
                     break;
                 case MSG_CLEANUP:
                     mCleanup = true;
+                    if (mGLThreadManager != null) {
+                        mGLThreadManager.disconnectIonOutputQueues();
+                    }
                     try {
                         boolean success = mCaptureCollector.waitForEmpty(JPEG_FRAME_TIMEOUT,
                                 TimeUnit.MILLISECONDS);
