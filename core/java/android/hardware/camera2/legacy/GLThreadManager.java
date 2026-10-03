@@ -28,6 +28,8 @@ import android.util.Size;
 import android.view.Surface;
 
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Map;
 
 import static com.android.internal.util.Preconditions.*;
 
@@ -66,12 +68,14 @@ public class GLThreadManager {
         public final ConditionVariable condition;
         public final Collection<Pair<Surface, Size>> surfaces;
         public final CaptureCollector collector;
+        public final Map<Surface, Long> streamUseCases;
 
         public ConfigureHolder(ConditionVariable condition, Collection<Pair<Surface,
-                Size>> surfaces, CaptureCollector collector) {
+                Size>> surfaces, CaptureCollector collector, Map<Surface, Long> streamUseCases) {
             this.condition = condition;
             this.surfaces = surfaces;
             this.collector = collector;
+            this.streamUseCases = Map.copyOf(streamUseCases);
         }
     }
 
@@ -91,7 +95,7 @@ public class GLThreadManager {
                     case MSG_NEW_CONFIGURATION:
                         ConfigureHolder configure = (ConfigureHolder) msg.obj;
                         mTextureRenderer.cleanupEGLContext();
-                        mTextureRenderer.configureSurfaces(configure.surfaces);
+                        mTextureRenderer.configureSurfaces(configure.surfaces, configure.streamUseCases);
                         mCaptureCollector = checkNotNull(configure.collector);
                         configure.condition.open();
                         mConfigured = true;
@@ -300,11 +304,16 @@ public class GLThreadManager {
      */
     public void setConfigurationAndWait(Collection<Pair<Surface, Size>> surfaces,
                                         CaptureCollector collector) {
+        setConfigurationAndWait(surfaces, collector, Collections.emptyMap());
+    }
+
+    public void setConfigurationAndWait(Collection<Pair<Surface, Size>> surfaces,
+            CaptureCollector collector, Map<Surface, Long> streamUseCases) {
         checkNotNull(collector, "collector must not be null");
         Handler handler = mGLHandlerThread.getHandler();
 
         final ConditionVariable condition = new ConditionVariable(/*closed*/false);
-        ConfigureHolder configure = new ConfigureHolder(condition, surfaces, collector);
+        ConfigureHolder configure = new ConfigureHolder(condition, surfaces, collector, streamUseCases);
 
         Message m = handler.obtainMessage(MSG_NEW_CONFIGURATION, /*arg1*/0, /*arg2*/0, configure);
         handler.sendMessage(m);

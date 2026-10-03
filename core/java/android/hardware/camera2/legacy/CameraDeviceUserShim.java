@@ -47,6 +47,7 @@ import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.util.Log;
 import android.util.SparseArray;
+import android.util.SparseLongArray;
 import android.view.Surface;
 
 import java.util.ArrayList;
@@ -82,6 +83,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
     private int mSurfaceIdCounter;
     private boolean mConfiguring;
     private final SparseArray<Surface> mSurfaces;
+    private final SparseLongArray mStreamUseCases = new SparseLongArray();
     private final CameraCharacteristics mCameraCharacteristics;
     private final CameraLooper mCameraInit;
     private final CameraCallbackThread mCameraCallbacks;
@@ -576,6 +578,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
         }
 
         SparseArray<Surface> surfaces = null;
+        SparseLongArray streamUseCases;
         synchronized(mConfigureLock) {
             if (!mConfiguring) {
                 String err = "Cannot end configure, no configuration change in progress.";
@@ -586,8 +589,9 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
                 surfaces = mSurfaces.clone();
             }
             mConfiguring = false;
+            streamUseCases = mStreamUseCases.clone();
         }
-        mLegacyDevice.configureOutputs(surfaces);
+        mLegacyDevice.configureOutputs(surfaces, streamUseCases);
 
         return new int[0]; // Offline mode is not supported
     }
@@ -616,6 +620,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
                 throw new ServiceSpecificException(ICameraService.ERROR_ILLEGAL_ARGUMENT, err);
             }
             mSurfaces.removeAt(index);
+            mStreamUseCases.delete(streamId);
         }
     }
 
@@ -639,6 +644,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
             validateOutputConfiguration(outputConfiguration);
             int id = ++mSurfaceIdCounter;
             mSurfaces.put(id, outputConfiguration.getSurface());
+            mStreamUseCases.put(id, outputConfiguration.getStreamUseCase());
             return id;
         }
     }
@@ -648,7 +654,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
                 "Unsupported OutputConfiguration " + field);
     }
 
-    private static void validateOutputConfiguration(OutputConfiguration outputConfiguration) {
+    private void validateOutputConfiguration(OutputConfiguration outputConfiguration) {
         if (outputConfiguration.isDeferredConfiguration()) {
             rejectOutputConfiguration("deferred configuration");
         }
@@ -671,8 +677,9 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
         if (outputConfiguration.getDynamicRangeProfile() != DynamicRangeProfiles.STANDARD) {
             rejectOutputConfiguration("dynamic range profile");
         }
-        if (outputConfiguration.getStreamUseCase()
-                != CameraMetadata.SCALER_AVAILABLE_STREAM_USE_CASES_DEFAULT) {
+        if (!LegacyStreamUseCase.isSupported(outputConfiguration.getStreamUseCase(),
+                mCameraCharacteristics.get(
+                        CameraCharacteristics.SCALER_AVAILABLE_STREAM_USE_CASES))) {
             rejectOutputConfiguration("stream use case");
         }
         if (outputConfiguration.getSensorPixelModes().contains(

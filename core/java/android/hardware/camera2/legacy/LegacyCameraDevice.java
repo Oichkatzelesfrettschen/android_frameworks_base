@@ -40,12 +40,15 @@ import android.util.Log;
 import android.util.Pair;
 import android.util.Size;
 import android.util.SparseArray;
+import android.util.SparseLongArray;
 import android.view.Surface;
 
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
 import static android.hardware.camera2.legacy.LegacyExceptionUtils.*;
 import static com.android.internal.util.Preconditions.*;
@@ -370,11 +373,23 @@ public class LegacyCameraDevice implements AutoCloseable {
      * @hide
      */
     public int configureOutputs(SparseArray<Surface> outputs, boolean validateSurfacesOnly) {
+        return configureOutputs(outputs, new SparseLongArray(), validateSurfacesOnly);
+    }
+
+    public int configureOutputs(SparseArray<Surface> outputs, SparseLongArray streamUseCases) {
+        return configureOutputs(outputs, streamUseCases, false);
+    }
+
+    private int configureOutputs(SparseArray<Surface> outputs, SparseLongArray streamUseCases,
+            boolean validateSurfacesOnly) {
+        Map<Surface, Long> surfaceUseCases = new HashMap<>();
         List<Pair<Surface, Size>> sizedSurfaces = new ArrayList<>();
         if (outputs != null) {
             int count = outputs.size();
             for (int i = 0; i < count; i++)  {
                 Surface output = outputs.valueAt(i);
+                surfaceUseCases.put(output, streamUseCases.get(outputs.keyAt(i),
+                        LegacyStreamUseCase.DEFAULT));
                 if (output == null) {
                     Log.e(TAG, "configureOutputs - null outputs are not allowed");
                     return BAD_VALUE;
@@ -438,7 +453,7 @@ public class LegacyCameraDevice implements AutoCloseable {
 
         boolean success = false;
         if (mDeviceState.setConfiguring()) {
-            mRequestThreadManager.configure(sizedSurfaces);
+            mRequestThreadManager.configure(sizedSurfaces, surfaceUseCases);
             success = mDeviceState.setIdle();
         }
 

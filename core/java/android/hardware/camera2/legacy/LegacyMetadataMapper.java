@@ -759,6 +759,11 @@ public class LegacyMetadataMapper {
          */
         int[] capabilities = { REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE };
         m.set(REQUEST_AVAILABLE_CAPABILITIES, capabilities);
+        if ("true".equals(p.get(LegacyRequestMapper.KEY_HTC_VIDEO_60FPS_SUPPORTED))) {
+            // Purpose hints route recording and viewfinder queues independently.
+            // Partial hints leave STREAM_USE_CASE capability guarantees unadvertised.
+            m.set(SCALER_AVAILABLE_STREAM_USE_CASES, LegacyStreamUseCase.available());
+        }
 
         /*
          * request.availableCharacteristicsKeys
@@ -794,6 +799,7 @@ public class LegacyMetadataMapper {
                     CameraCharacteristics.REQUEST_PARTIAL_RESULT_COUNT                    ,
                     CameraCharacteristics.REQUEST_PIPELINE_MAX_DEPTH                      ,
                     CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM               ,
+                    CameraCharacteristics.SCALER_AVAILABLE_STREAM_USE_CASES                ,
 //                    CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP                 ,
                     CameraCharacteristics.SCALER_CROPPING_TYPE                            ,
                     CameraCharacteristics.SENSOR_AVAILABLE_TEST_PATTERN_MODES             ,
