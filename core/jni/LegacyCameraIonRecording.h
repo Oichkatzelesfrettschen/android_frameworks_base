@@ -211,7 +211,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
 
    private:
     static constexpr size_t kPoolSize = 16;
-    static constexpr size_t kQueueDepth = 3;
+    static constexpr size_t kQueueDepth = 5;
     static constexpr size_t kHeldBudget = 6;
     struct Slot {
         sp<IMemory> memory;
