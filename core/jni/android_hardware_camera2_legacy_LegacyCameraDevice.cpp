@@ -1120,6 +1120,37 @@ static void LegacyCameraDevice_nativeDestroyIonRecordingBridge(JNIEnv* env, jobj
 #endif
 }
 
+static jint LegacyCameraDevice_nativeDescribeIonOutput(JNIEnv* env, jobject,
+        jobject surface, jint index) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    sp<Surface> nativeSurface = android_view_Surface_getSurface(env, surface);
+    if (nativeSurface == nullptr || index < 0) return BAD_VALUE;
+    int usage = 0;
+    status_t error = nativeSurface->query(NATIVE_WINDOW_CONSUMER_USAGE_BITS, &usage);
+    if (error != NO_ERROR) return error;
+    const String8 consumer = nativeSurface->getIGraphicBufferProducer()->getConsumerName();
+    ALOGI("ION GL output index=%d consumer=%s usage=0x%x", index, consumer.c_str(), usage);
+    return NO_ERROR;
+#else
+    return INVALID_OPERATION;
+#endif
+}
+
+static jint LegacyCameraDevice_nativeSetIonOutputFifo(JNIEnv* env, jobject,
+        jobject surface, jboolean enabled) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    sp<Surface> nativeSurface = android_view_Surface_getSurface(env, surface);
+    if (nativeSurface == nullptr) return BAD_VALUE;
+    // A positive timeout preserves queued frames; disconnect precedes default restoration.
+    status_t error = nativeSurface->setDequeueTimeout(enabled ? 100000000 : -1);
+    ALOGI("ION GL output FIFO enabled=%d timeout_ns=%d status=%d", enabled,
+            enabled ? 100000000 : -1, error);
+    return error;
+#else
+    return INVALID_OPERATION;
+#endif
+}
+
 static jint LegacyCameraDevice_nativeGetJpegFooterSize(JNIEnv* env, jobject thiz) {
     ALOGV("nativeGetJpegFooterSize");
     return static_cast<jint>(sizeof(struct camera3_jpeg_blob));
@@ -1128,6 +1159,10 @@ static jint LegacyCameraDevice_nativeGetJpegFooterSize(JNIEnv* env, jobject thiz
 } // extern "C"
 
 static const JNINativeMethod gCameraDeviceMethods[] = {
+    { "nativeDescribeIonOutput", "(Landroid/view/Surface;I)I",
+      (void *)LegacyCameraDevice_nativeDescribeIonOutput },
+    { "nativeSetIonOutputFifo", "(Landroid/view/Surface;Z)I",
+      (void *)LegacyCameraDevice_nativeSetIonOutputFifo },
     { "nativeCreateIonRecordingBridge", "(Landroid/hardware/camera2/legacy/GLThreadManager;II)J",
       (void *)LegacyCameraDevice_nativeCreateIonRecordingBridge },
     { "nativeStartIonRecordingStream", "(Landroid/hardware/Camera;J)I",
