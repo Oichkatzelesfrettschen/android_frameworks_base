@@ -209,9 +209,20 @@ void RenderThread::requireVkContext() {
     setGrContext(grContext);
 }
 
+static GrContextOptions::Enable toSkiaEnable(int triState) {
+    if (triState == 1) return GrContextOptions::Enable::kYes;
+    if (triState == 0) return GrContextOptions::Enable::kNo;
+    return GrContextOptions::Enable::kDefault;
+}
+
 void RenderThread::initGrContextOptions(GrContextOptions& options) {
     options.fPreferExternalImagesOverES3 = true;
     options.fDisableDistanceFieldPaths = true;
+    options.fReduceOpsTaskSplitting = toSkiaEnable(Properties::skiaReduceOpsTaskSplitting);
+    options.fUseDrawInsteadOfClear = toSkiaEnable(Properties::skiaUseDrawInsteadOfClear);
+    if (Properties::skiaAvoidStencilBuffers >= 0) {
+        options.fAvoidStencilBuffers = Properties::skiaAvoidStencilBuffers == 1;
+    }
 }
 
 void RenderThread::destroyRenderingContext() {

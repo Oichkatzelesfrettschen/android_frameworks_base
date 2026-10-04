@@ -164,6 +164,22 @@ enum DebugLevel {
 
 #define PROPERTY_RENDERAHEAD "debug.hwui.render_ahead"
 
+/**
+ * Skia GrContextOptions selected per device. Each property reads "true"/"1"
+ * to force the option on, "false"/"0" to force it off, and anything else to
+ * keep Skia's per-GPU choice. The values apply when RenderThread creates its
+ * GrContext, so a change takes effect at the next process start.
+ *
+ * reduceopstasksplitting lets Ganesh reorder ops so an offscreen layer stops
+ * splitting the frame's render pass; on a tile-based GPU each split stores
+ * and reloads the partial frame. usedrawinsteadofclear overrides the
+ * clears-as-draws driver workaround. avoidstencilbuffers keeps clips and
+ * paths off the stencil buffer.
+ */
+#define PROPERTY_SKIA_REDUCE_OPS_TASK_SPLITTING "renderthread.skia.reduceopstasksplitting"
+#define PROPERTY_SKIA_USE_DRAW_INSTEAD_OF_CLEAR "renderthread.skia.usedrawinsteadofclear"
+#define PROPERTY_SKIA_AVOID_STENCIL_BUFFERS "renderthread.skia.avoidstencilbuffers"
+
 ///////////////////////////////////////////////////////////////////////////////
 // Misc
 ///////////////////////////////////////////////////////////////////////////////
@@ -248,6 +264,11 @@ public:
     ANDROID_API static int contextPriority;
 
     static int defaultRenderAhead;
+
+    // -1 keeps Skia's choice, 0 forces the option off, 1 forces it on.
+    static int skiaReduceOpsTaskSplitting;
+    static int skiaUseDrawInsteadOfClear;
+    static int skiaAvoidStencilBuffers;
 
 private:
     static ProfileType sProfileType;
