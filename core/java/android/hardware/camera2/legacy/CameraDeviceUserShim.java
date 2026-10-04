@@ -599,7 +599,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
             }
             mConfiguring = false;
         }
-        mLegacyDevice.configureOutputs(surfaces);
+        LegacyExceptionUtils.throwOnServiceError(mLegacyDevice.configureOutputs(surfaces));
 
         return new int[0]; // Offline mode is not supported
     }
