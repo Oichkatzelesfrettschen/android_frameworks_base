@@ -808,13 +808,9 @@ void CanvasContext::draw(bool solelyTextureViewUpdates) {
     return;
 }
 
+// Fills DisplayPresentTime of the oldest of the last six swapped frames,
+// whose JankTracker row and any FrameMetrics observers both read it.
 void CanvasContext::reportMetricsWithPresentTime() {
-    {  // acquire lock
-        std::scoped_lock lock(mFrameInfoMutex);
-        if (mFrameMetricsReporter == nullptr) {
-            return;
-        }
-    }  // release lock
     if (mNativeSurface == nullptr) {
         return;
     }
