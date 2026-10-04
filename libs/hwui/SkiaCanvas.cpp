@@ -18,6 +18,7 @@
 
 #include "CanvasProperty.h"
 #include "NinePatchUtils.h"
+#include "Properties.h"
 #include "VectorDrawable.h"
 #include "hwui/Bitmap.h"
 #include "hwui/MinikinUtils.h"
@@ -188,11 +189,18 @@ int SkiaCanvas::saveLayerAlpha(float left, float top, float right, float bottom,
 }
 
 int SkiaCanvas::saveUnclippedLayer(int left, int top, int right, int bottom) {
+    if (uirenderer::Properties::skiaSaveBehind == 0) {
+        return this->save(SaveFlags::MatrixClip);
+    }
     SkRect bounds = SkRect::MakeLTRB(left, top, right, bottom);
     return SkAndroidFrameworkUtils::SaveBehind(mCanvas, &bounds);
 }
 
 void SkiaCanvas::restoreUnclippedLayer(int restoreCount, const SkPaint& paint) {
+    if (uirenderer::Properties::skiaSaveBehind == 0) {
+        this->restoreToCount(restoreCount);
+        return;
+    }
 
     while (mCanvas->getSaveCount() > restoreCount + 1) {
         this->restore();

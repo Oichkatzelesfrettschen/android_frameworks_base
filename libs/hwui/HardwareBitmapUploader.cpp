@@ -22,6 +22,7 @@
 #include "thread/ThreadBase.h"
 #include "utils/TimeUtils.h"
 
+#include <android-base/properties.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
@@ -382,6 +383,32 @@ static void createUploader(bool usingGL) {
     }
 }
 
+// ro.hwui.hardware_bitmap_cpu_upload fills hardware bitmaps through a CPU
+// mapping of the GraphicBuffer, row by row at the buffer's stride. It is for
+// GLES drivers whose glTexSubImage2D() into an EGLImage-backed texture writes
+// rows at the image width instead of the gralloc stride.
+static bool useCpuUpload() {
+    static const bool cpuUpload =
+            base::GetBoolProperty("ro.hwui.hardware_bitmap_cpu_upload", false);
+    return cpuUpload;
+}
+
+static bool cpuUploadHardwareBitmap(const SkBitmap& bitmap, const sp<GraphicBuffer>& buffer) {
+    ATRACE_FORMAT("CPU -> gralloc copy (%dx%d)", bitmap.width(), bitmap.height());
+    void* dst = nullptr;
+    if (buffer->lock(GraphicBuffer::USAGE_SW_WRITE_RARELY, &dst) != OK || dst == nullptr) {
+        ALOGW("Could not lock the hardware bitmap buffer for writing");
+        return false;
+    }
+    const size_t bytesPerPixel = bitmap.bytesPerPixel();
+    const size_t rowBytes = bitmap.width() * bytesPerPixel;
+    const size_t dstStride = buffer->getStride() * bytesPerPixel;
+    for (int y = 0; y < bitmap.height(); y++) {
+        memcpy(static_cast<uint8_t*>(dst) + y * dstStride, bitmap.getAddr(0, y), rowBytes);
+    }
+    return buffer->unlock() == OK;
+}
+
 sk_sp<Bitmap> HardwareBitmapUploader::allocateHardwareBitmap(const SkBitmap& sourceBitmap) {
     ATRACE_CALL();
 
@@ -392,12 +419,20 @@ sk_sp<Bitmap> HardwareBitmapUploader::allocateHardwareBitmap(const SkBitmap& sou
     if (!format.valid) {
         return nullptr;
     }
+    // The CPU copy moves source rows unchanged, so a Gray8 source, which the
+    // GL path expands through GL_LUMINANCE into an RGBA_8888 buffer, is
+    // converted to N32 first.
+    if (useCpuUpload() && sourceBitmap.colorType() == kGray_8_SkColorType) {
+        format.isSupported = false;
+    }
 
     SkBitmap bitmap = makeHwCompatible(format, sourceBitmap);
     sp<GraphicBuffer> buffer = new GraphicBuffer(
             static_cast<uint32_t>(bitmap.width()), static_cast<uint32_t>(bitmap.height()),
             format.pixelFormat,
-            GraphicBuffer::USAGE_HW_TEXTURE | GraphicBuffer::USAGE_SW_WRITE_NEVER |
+            GraphicBuffer::USAGE_HW_TEXTURE |
+                    (useCpuUpload() ? GraphicBuffer::USAGE_SW_WRITE_RARELY
+                                    : GraphicBuffer::USAGE_SW_WRITE_NEVER) |
                     GraphicBuffer::USAGE_SW_READ_NEVER,
             std::string("Bitmap::allocateHardwareBitmap pid [") + std::to_string(getpid()) +
                     "]");
@@ -408,10 +443,16 @@ sk_sp<Bitmap> HardwareBitmapUploader::allocateHardwareBitmap(const SkBitmap& sou
         return nullptr;
     }
 
-    createUploader(usingGL);
+    if (useCpuUpload()) {
+        if (!cpuUploadHardwareBitmap(bitmap, buffer)) {
+            return nullptr;
+        }
+    } else {
+        createUploader(usingGL);
 
-    if (!sUploader->uploadHardwareBitmap(bitmap, format, buffer)) {
-        return nullptr;
+        if (!sUploader->uploadHardwareBitmap(bitmap, format, buffer)) {
+            return nullptr;
+        }
     }
     return Bitmap::createFrom(buffer->toAHardwareBuffer(), bitmap.colorType(),
                               bitmap.refColorSpace(), bitmap.alphaType(),

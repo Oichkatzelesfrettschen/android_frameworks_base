@@ -78,6 +78,17 @@ bool Properties::isolatedProcess = false;
 
 int Properties::contextPriority = 0;
 int Properties::defaultRenderAhead = -1;
+int Properties::skiaReduceOpsTaskSplitting = -1;
+int Properties::skiaUseDrawInsteadOfClear = -1;
+int Properties::skiaAvoidStencilBuffers = -1;
+int Properties::skiaSaveBehind = -1;
+
+static int getTriStateProperty(const char* name) {
+    std::string value = base::GetProperty(name, "");
+    if (value == "true" || value == "1") return 1;
+    if (value == "false" || value == "0") return 0;
+    return -1;
+}
 
 bool Properties::load() {
     bool prevDebugLayersUpdates = debugLayersUpdates;
@@ -128,6 +139,11 @@ bool Properties::load() {
 
     defaultRenderAhead = std::max(-1, std::min(2, base::GetIntProperty(PROPERTY_RENDERAHEAD,
             render_ahead().value_or(0))));
+
+    skiaReduceOpsTaskSplitting = getTriStateProperty(PROPERTY_SKIA_REDUCE_OPS_TASK_SPLITTING);
+    skiaUseDrawInsteadOfClear = getTriStateProperty(PROPERTY_SKIA_USE_DRAW_INSTEAD_OF_CLEAR);
+    skiaAvoidStencilBuffers = getTriStateProperty(PROPERTY_SKIA_AVOID_STENCIL_BUFFERS);
+    skiaSaveBehind = getTriStateProperty(PROPERTY_SKIA_SAVE_BEHIND);
 
     return (prevDebugLayersUpdates != debugLayersUpdates) || (prevDebugOverdraw != debugOverdraw);
 }
