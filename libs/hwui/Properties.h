@@ -180,6 +180,16 @@ enum DebugLevel {
 #define PROPERTY_SKIA_USE_DRAW_INSTEAD_OF_CLEAR "renderthread.skia.usedrawinsteadofclear"
 #define PROPERTY_SKIA_AVOID_STENCIL_BUFFERS "renderthread.skia.avoidstencilbuffers"
 
+/**
+ * Canvas.saveUnclippedLayer, which View draws fading edges with, snapshots
+ * the pixels behind the edge through SaveBehind and restores them under a
+ * DST_OUT gradient. The snapshot copies out of the render target mid-frame,
+ * which on a tile-based GPU renders, stores and reloads the partial frame.
+ * "false" or "0" records a plain matrix and clip save instead, and the
+ * matching restore drops the gradient, so fading edges become hard clips.
+ */
+#define PROPERTY_SKIA_SAVE_BEHIND "renderthread.skia.savebehind"
+
 ///////////////////////////////////////////////////////////////////////////////
 // Misc
 ///////////////////////////////////////////////////////////////////////////////
@@ -269,6 +279,7 @@ public:
     static int skiaReduceOpsTaskSplitting;
     static int skiaUseDrawInsteadOfClear;
     static int skiaAvoidStencilBuffers;
+    static int skiaSaveBehind;
 
 private:
     static ProfileType sProfileType;
