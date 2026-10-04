@@ -373,33 +373,57 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
 
         CameraCallbackThread threadCallbacks = new CameraCallbackThread(callbacks);
 
-        // TODO: Make this async instead of blocking
-        int initErrors = init.waitForOpen(OPEN_CAMERA_TIMEOUT_MS);
-        Camera legacyCamera = init.getCamera();
-
-        // Check errors old HAL initialization
-        LegacyExceptionUtils.throwOnServiceError(initErrors);
-
-        // Disable shutter sounds (this will work unconditionally) for api2 clients
-        legacyCamera.disableShutterSound();
-
-        CameraInfo info = new CameraInfo();
-        Camera.getCameraInfo(cameraId, info);
-
-        Camera.Parameters legacyParameters = null;
+        // Any exception before the shim takes ownership quits the callback thread.
+        // After a completed open it also releases the camera and joins the camera
+        // looper; a timed-out open was already released by waitForOpen and its
+        // looper thread is still inside cameraInitUnspecified, so it is not joined.
+        boolean success = false;
+        boolean openCompleted = false;
         try {
-            legacyParameters = legacyCamera.getParameters();
-        } catch (RuntimeException e) {
-            throw new ServiceSpecificException(ICameraService.ERROR_INVALID_OPERATION,
-                    "Unable to get initial parameters: " + e.getMessage());
-        }
+            // TODO: Make this async instead of blocking
+            int initErrors = init.waitForOpen(OPEN_CAMERA_TIMEOUT_MS);
+            openCompleted = true;
+            Camera legacyCamera = init.getCamera();
 
-        CameraCharacteristics characteristics =
-                LegacyMetadataMapper.createCharacteristics(legacyParameters, info, cameraId,
-                        displaySize);
-        LegacyCameraDevice device = new LegacyCameraDevice(
-                cameraId, legacyCamera, characteristics, threadCallbacks);
-        return new CameraDeviceUserShim(cameraId, device, characteristics, init, threadCallbacks);
+            // Check errors old HAL initialization
+            LegacyExceptionUtils.throwOnServiceError(initErrors);
+
+            // Disable shutter sounds (this will work unconditionally) for api2 clients
+            legacyCamera.disableShutterSound();
+
+            CameraInfo info = new CameraInfo();
+            Camera.getCameraInfo(cameraId, info);
+
+            Camera.Parameters legacyParameters = null;
+            try {
+                legacyParameters = legacyCamera.getParameters();
+            } catch (RuntimeException e) {
+                throw new ServiceSpecificException(ICameraService.ERROR_INVALID_OPERATION,
+                        "Unable to get initial parameters: " + e.getMessage());
+            }
+
+            CameraCharacteristics characteristics =
+                    LegacyMetadataMapper.createCharacteristics(legacyParameters, info, cameraId,
+                            displaySize);
+            LegacyCameraDevice device = new LegacyCameraDevice(
+                    cameraId, legacyCamera, characteristics, threadCallbacks);
+            CameraDeviceUserShim shim = new CameraDeviceUserShim(cameraId, device,
+                    characteristics, init, threadCallbacks);
+            success = true;
+            return shim;
+        } finally {
+            if (!success) {
+                if (openCompleted) {
+                    try {
+                        init.getCamera().release();
+                    } catch (RuntimeException e) {
+                        Log.e(TAG, "connectBinderShim - Failed to release camera after error ", e);
+                    }
+                    init.close();
+                }
+                threadCallbacks.close();
+            }
+        }
     }
 
     @Override
