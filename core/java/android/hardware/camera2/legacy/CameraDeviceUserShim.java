@@ -653,6 +653,11 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
                 Log.e(TAG, err);
                 throw new ServiceSpecificException(ICameraService.ERROR_ILLEGAL_ARGUMENT, err);
             }
+            if (outputConfiguration.getSurfaces().size() > 1) {
+                String err = "Cannot create stream, surface sharing is not supported.";
+                Log.e(TAG, err);
+                throw new ServiceSpecificException(ICameraService.ERROR_ILLEGAL_ARGUMENT, err);
+            }
             int id = ++mSurfaceIdCounter;
             mSurfaces.put(id, outputConfiguration.getSurface());
             return id;
@@ -717,6 +722,9 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
     @Override
     public void updateOutputConfiguration(int streamId, OutputConfiguration config) {
         // TODO: b/63912484 implement updateOutputConfiguration.
+        String err = "Updating output configuration is not supported on legacy devices";
+        Log.e(TAG, err);
+        throw new ServiceSpecificException(ICameraService.ERROR_INVALID_OPERATION, err);
     }
 
     @Override
