@@ -778,6 +778,7 @@ cc_test {
         "tests/unit/GraphicsStatsServiceTests.cpp",
         "tests/unit/HintSessionWrapperTests.cpp",
         "tests/unit/JankTrackerTests.cpp",
+        "tests/unit/FrameInfoTests.cpp",
         "tests/unit/FrameMetricsReporterTests.cpp",
         "tests/unit/LayerUpdateQueueTests.cpp",
         "tests/unit/LinearAllocatorTests.cpp",
