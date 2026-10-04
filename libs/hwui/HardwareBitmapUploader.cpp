@@ -419,6 +419,12 @@ sk_sp<Bitmap> HardwareBitmapUploader::allocateHardwareBitmap(const SkBitmap& sou
     if (!format.valid) {
         return nullptr;
     }
+    // The CPU copy moves source rows unchanged, so a Gray8 source, which the
+    // GL path expands through GL_LUMINANCE into an RGBA_8888 buffer, is
+    // converted to N32 first.
+    if (useCpuUpload() && sourceBitmap.colorType() == kGray_8_SkColorType) {
+        format.isSupported = false;
+    }
 
     SkBitmap bitmap = makeHwCompatible(format, sourceBitmap);
     sp<GraphicBuffer> buffer = new GraphicBuffer(
