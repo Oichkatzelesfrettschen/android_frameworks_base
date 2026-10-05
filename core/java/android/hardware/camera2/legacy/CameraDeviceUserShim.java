@@ -118,6 +118,13 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
         private final ConditionVariable mStartDone = new ConditionVariable();
         private final Thread mThread;
 
+        // mOpenLock orders the end of cameraInitUnspecified against a waitForOpen
+        // timeout: whichever side runs second sees the other's flag, so exactly
+        // one of the opener and the looper thread owns the camera.
+        private final Object mOpenLock = new Object();
+        private boolean mInitDone = false;
+        private boolean mAbandoned = false;
+
         /**
          * Spin up a new thread, immediately open the camera in the background.
          *
@@ -146,7 +153,23 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
             // Save the looper so that we can terminate this thread
             // after we are done with it.
             mLooper = Looper.myLooper();
-            mInitErrors = mCamera.cameraInitUnspecified(mCameraId);
+            int initErrors = mCamera.cameraInitUnspecified(mCameraId);
+            boolean abandoned;
+            synchronized (mOpenLock) {
+                mInitErrors = initErrors;
+                mInitDone = true;
+                abandoned = mAbandoned;
+            }
+            if (abandoned) {
+                // waitForOpen timed out and the opener left, so this thread
+                // releases the camera and exits without entering the loop.
+                try {
+                    mCamera.release();
+                } catch (RuntimeException e) {
+                    Log.e(TAG, "CameraLooper - Failed to release abandoned camera ", e);
+                }
+                return;
+            }
             mStartDone.open();
             Looper.loop();  // Blocks forever until #close is called.
         }
@@ -182,15 +205,20 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
         public int waitForOpen(int timeoutMs) {
             // Block until the camera is open asynchronously
             if (!mStartDone.block(timeoutMs)) {
-                Log.e(TAG, "waitForOpen - Camera failed to open after timeout of "
-                        + OPEN_CAMERA_TIMEOUT_MS + " ms");
-                try {
-                    mCamera.release();
-                } catch (RuntimeException e) {
-                    Log.e(TAG, "connectBinderShim - Failed to release camera after timeout ", e);
+                synchronized (mOpenLock) {
+                    if (!mInitDone) {
+                        Log.e(TAG, "waitForOpen - Camera failed to open after timeout of "
+                                + timeoutMs + " ms");
+                        // The looper thread releases the camera once
+                        // cameraInitUnspecified returns.
+                        mAbandoned = true;
+                        throw new ServiceSpecificException(
+                                ICameraService.ERROR_INVALID_OPERATION);
+                    }
                 }
-
-                throw new ServiceSpecificException(ICameraService.ERROR_INVALID_OPERATION);
+                // Initialization finished between the timeout and the lock; the
+                // looper is starting, so the opener keeps the camera.
+                mStartDone.block();
             }
 
             return mInitErrors;
@@ -375,8 +403,8 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
 
         // Any exception before the shim takes ownership quits the callback thread.
         // After a completed open it also releases the camera and joins the camera
-        // looper; a timed-out open was already released by waitForOpen and its
-        // looper thread is still inside cameraInitUnspecified, so it is not joined.
+        // looper; a timed-out open belongs to the looper thread, which releases the
+        // camera and exits once cameraInitUnspecified returns.
         boolean success = false;
         boolean openCompleted = false;
         try {
