@@ -61,6 +61,8 @@ public class GLThreadManager {
         public final ConditionVariable condition;
         public final Collection<Pair<Surface, Size>> surfaces;
         public final CaptureCollector collector;
+        // Written on the GL thread before condition opens.
+        public volatile boolean success = false;
 
         public ConfigureHolder(ConditionVariable condition, Collection<Pair<Surface,
                 Size>> surfaces, CaptureCollector collector) {
@@ -85,11 +87,17 @@ public class GLThreadManager {
                 switch (msg.what) {
                     case MSG_NEW_CONFIGURATION:
                         ConfigureHolder configure = (ConfigureHolder) msg.obj;
-                        mTextureRenderer.cleanupEGLContext();
-                        mTextureRenderer.configureSurfaces(configure.surfaces);
-                        mCaptureCollector = checkNotNull(configure.collector);
-                        configure.condition.open();
-                        mConfigured = true;
+                        try {
+                            mTextureRenderer.cleanupEGLContext();
+                            mTextureRenderer.configureSurfaces(configure.surfaces);
+                            mCaptureCollector = checkNotNull(configure.collector);
+                            configure.success = true;
+                            mConfigured = true;
+                        } finally {
+                            // setConfigurationAndWait blocks on this condition whatever
+                            // the outcome; a failure still reaches the catch below.
+                            configure.condition.open();
+                        }
                         break;
                     case MSG_NEW_FRAME:
                         if (mDroppingFrames) {
@@ -207,6 +215,9 @@ public class GLThreadManager {
      * @param surfaces a collection of pairs of {@link android.view.Surface}s and their
      *                 corresponding sizes to configure.
      * @param collector a {@link CaptureCollector} to retrieve requests from.
+     *
+     * @throws IllegalStateException if the GL thread failed to apply the configuration; the
+     *         caller puts the device state in error.
      */
     public void setConfigurationAndWait(Collection<Pair<Surface, Size>> surfaces,
                                         CaptureCollector collector) {
@@ -221,6 +232,9 @@ public class GLThreadManager {
 
         // Block until configuration applied.
         condition.block();
+        if (!configure.success) {
+            throw new IllegalStateException("GL thread failed to configure output surfaces");
+        }
     }
 
     /**

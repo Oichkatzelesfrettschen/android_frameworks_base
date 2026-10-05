@@ -711,22 +711,31 @@ public class RequestThreadManager {
                     int sizes = config.surfaces != null ? config.surfaces.size() : 0;
                     Log.i(TAG, "Configure outputs: " + sizes + " surfaces configured.");
 
+                    // configure() blocks on config.condition whatever the outcome; a
+                    // failure leaves the device in error, so its setIdle() fails.
                     try {
-                        boolean success = mCaptureCollector.waitForEmpty(JPEG_FRAME_TIMEOUT,
-                                TimeUnit.MILLISECONDS);
-                        if (!success) {
-                            Log.e(TAG, "Timed out while queueing configure request.");
-                            mCaptureCollector.failAll();
+                        try {
+                            boolean success = mCaptureCollector.waitForEmpty(JPEG_FRAME_TIMEOUT,
+                                    TimeUnit.MILLISECONDS);
+                            if (!success) {
+                                Log.e(TAG, "Timed out while queueing configure request.");
+                                mCaptureCollector.failAll();
+                            }
+                        } catch (InterruptedException e) {
+                            Log.e(TAG, "Interrupted while waiting for requests to complete.");
+                            mDeviceState.setError(
+                                    CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE);
+                            break;
                         }
-                    } catch (InterruptedException e) {
-                        Log.e(TAG, "Interrupted while waiting for requests to complete.");
+
+                        configureOutputs(config.surfaces);
+                    } catch (RuntimeException e) {
+                        Log.e(TAG, "Received device exception while configuring outputs: ", e);
                         mDeviceState.setError(
                                 CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE);
-                        break;
+                    } finally {
+                        config.condition.open();
                     }
-
-                    configureOutputs(config.surfaces);
-                    config.condition.open();
                     if (DEBUG) {
                         long totalTime = SystemClock.elapsedRealtimeNanos() - startTime;
                         Log.d(TAG, "Configure took " + totalTime + " ns");
