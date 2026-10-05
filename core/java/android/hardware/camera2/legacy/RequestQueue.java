@@ -20,6 +20,7 @@ import android.hardware.camera2.utils.SubmitInfo;
 import android.util.Log;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -90,6 +91,22 @@ public class RequestQueue {
         RequestQueueEntry ret =  new RequestQueueEntry(next, mCurrentFrameNumber, queueEmptied);
         mCurrentFrameNumber += next.getNumberOfRequests();
         return ret;
+    }
+
+    /**
+     * Remove every queued non-repeating burst, numbering its frames as {@link #getNext} would.
+     *
+     * @return the removed entries in submission order; empty if no burst is queued.
+     */
+    public synchronized List<RequestQueueEntry> drainQueued() {
+        List<RequestQueueEntry> drained = new ArrayList<>();
+        BurstHolder burst;
+        while ((burst = mRequestQueue.poll()) != null) {
+            drained.add(new RequestQueueEntry(burst, mCurrentFrameNumber,
+                    mRequestQueue.isEmpty()));
+            mCurrentFrameNumber += burst.getNumberOfRequests();
+        }
+        return drained;
     }
 
     /**

@@ -335,18 +335,21 @@ public class CameraDeviceState {
                 }
 
                 if (mCurrentHandler != null && mCurrentListener != null) {
+                    // The callback runs later on mCurrentHandler, so it carries the
+                    // request of this transition rather than reading mCurrentRequest.
+                    final RequestHolder request = mCurrentRequest;
                     if (error != NO_CAPTURE_ERROR) {
                         mCurrentHandler.post(new Runnable() {
                             @Override
                             public void run() {
-                                mCurrentListener.onError(error, /*errorArg*/null, mCurrentRequest);
+                                mCurrentListener.onError(error, /*errorArg*/null, request);
                             }
                         });
                     } else {
                         mCurrentHandler.post(new Runnable() {
                             @Override
                             public void run() {
-                                mCurrentListener.onCaptureStarted(mCurrentRequest, timestamp);
+                                mCurrentListener.onCaptureStarted(request, timestamp);
                             }
                         });
                     }

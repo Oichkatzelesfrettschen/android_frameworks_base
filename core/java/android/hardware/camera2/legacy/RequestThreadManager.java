@@ -1043,6 +1043,17 @@ public class RequestThreadManager {
     public long flush() {
         Log.i(TAG, "Flushing all pending requests.");
         long lastFrame = mRequestQueue.stopRepeating();
+        // Queued bursts never reach the camera; each of their requests fails with
+        // its own frame number so the client's capture sequences complete, and
+        // the already-posted MSG_SUBMIT_CAPTURE_REQUEST finds an empty queue.
+        for (RequestQueue.RequestQueueEntry entry : mRequestQueue.drainQueued()) {
+            for (RequestHolder holder :
+                    entry.getBurstHolder().produceRequestHolders(entry.getFrameNumber())) {
+                holder.failRequest();
+                mDeviceState.setCaptureStart(holder, /*timestamp*/0,
+                        CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_REQUEST);
+            }
+        }
         mCaptureCollector.failAll();
         return lastFrame;
     }
