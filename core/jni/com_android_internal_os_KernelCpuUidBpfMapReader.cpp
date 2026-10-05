@@ -198,7 +198,7 @@ int register_com_android_internal_os_KernelCpuUidBpfMapReader(JNIEnv *env) {
     gSparseArrayClassInfo.get =
             GetMethodIDOrDie(env, gSparseArrayClassInfo.clazz, "get", "(I)Ljava/lang/Object;");
     constexpr auto readerName = "com/android/internal/os/KernelCpuUidBpfMapReader";
-    constexpr JNINativeMethod method = {"startTrackingBpfTimes", "()Z",
+    static const JNINativeMethod method = {"startTrackingBpfTimes", "()Z",
                                         (void *)KernelCpuUidBpfMapReader_startTrackingBpfTimes};
 
     int ret = RegisterMethodsOrDie(env, readerName, &method, 1);
