@@ -1021,9 +1021,9 @@ public class ParameterUtils {
             leftEye = convertCameraPointToActiveArrayPoint(activeArray, zoomData,
                     leftEye, /*usePreviewCrop*/true);
             rightEye = convertCameraPointToActiveArrayPoint(activeArray, zoomData,
-                    leftEye, /*usePreviewCrop*/true);
+                    rightEye, /*usePreviewCrop*/true);
             mouth = convertCameraPointToActiveArrayPoint(activeArray, zoomData,
-                    leftEye, /*usePreviewCrop*/true);
+                    mouth, /*usePreviewCrop*/true);
 
             api2Face = faceRect.toFace(face.id, leftEye, rightEye, mouth);
         } else {
