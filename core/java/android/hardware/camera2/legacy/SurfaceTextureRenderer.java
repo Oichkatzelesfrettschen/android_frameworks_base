@@ -34,6 +34,8 @@ import android.util.Size;
 import android.view.Surface;
 import android.os.SystemProperties;
 
+import dalvik.system.VMRuntime;
+
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -494,8 +496,12 @@ public class SurfaceTextureRenderer {
                     EGL14.eglCreatePbufferSurface(mEGLDisplay, mConfigs, surfaceAttribs, 0);
             checkEglError("eglCreatePbufferSurface");
         }
-        mPBufferPixels = ByteBuffer.allocateDirect(maxLength * PBUFFER_PIXEL_BYTES)
-                .order(ByteOrder.nativeOrder());
+        // produceFrame consumes array() from index 0, so the pixels must start there; an
+        // allocateDirect buffer starts them at arrayOffset(), the alignment pad of its
+        // MemoryRef. A wrapped non-movable array starts at 0 and stays pinned, so
+        // glReadPixels and the JNI byte[] access in produceFrame use it without a copy.
+        mPBufferPixels = ByteBuffer.wrap((byte[]) VMRuntime.getRuntime().newNonMovableArray(
+                byte.class, maxLength * PBUFFER_PIXEL_BYTES)).order(ByteOrder.nativeOrder());
     }
 
     private void releaseEGLContext() {
