@@ -618,7 +618,7 @@ public class LegacyCameraDevice implements AutoCloseable {
                 return size;
             } else if (s.getWidth() <= MAX_DIMEN_FOR_ROUNDING && (bestSize == null ||
                     LegacyCameraDevice.findEuclidDistSquare(size, s) <
-                    LegacyCameraDevice.findEuclidDistSquare(bestSize, s))) {
+                    LegacyCameraDevice.findEuclidDistSquare(size, bestSize))) {
                 bestSize = s;
             }
         }
