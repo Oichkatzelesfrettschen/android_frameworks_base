@@ -802,12 +802,21 @@ public class SurfaceTextureRenderer {
             addGlTimestamp(timestamp);
         }
 
-        List<Long> targetSurfaceIds = new ArrayList();
-        try {
-            targetSurfaceIds = LegacyCameraDevice.getSurfaceIds(targetSurfaces);
-        } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
-            Log.w(TAG, "Surface abandoned, dropping frame. ", e);
-            request.setOutputAbandoned();
+        // Each target resolves on its own, so one abandoned output loses only its
+        // own buffer and the remaining targets still receive the frame.
+        List<Long> targetSurfaceIds = new ArrayList<>();
+        for (Surface s : targetSurfaces) {
+            try {
+                long id = LegacyCameraDevice.getSurfaceId(s);
+                if (id == 0) {
+                    throw new IllegalStateException(
+                            "Configured surface had null native GraphicBufferProducer pointer!");
+                }
+                targetSurfaceIds.add(id);
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                Log.w(TAG, "Surface abandoned, dropping frame. ", e);
+                targetCollector.reportPreviewBufferLost(request, s);
+            }
         }
 
         for (EGLSurfaceHolder holder : mSurfaces) {
@@ -824,7 +833,7 @@ public class SurfaceTextureRenderer {
                     swapBuffers(holder.eglSurface);
                 } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
                     Log.w(TAG, "Surface abandoned, dropping frame. ", e);
-                    request.setOutputAbandoned();
+                    targetCollector.reportPreviewBufferLost(request, holder.surface);
                 }
             }
         }
@@ -854,7 +863,7 @@ public class SurfaceTextureRenderer {
                             holder.width, holder.height, format);
                 } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
                     Log.w(TAG, "Surface abandoned, dropping frame. ", e);
-                    request.setOutputAbandoned();
+                    targetCollector.reportPreviewBufferLost(request, holder.surface);
                 }
             }
         }

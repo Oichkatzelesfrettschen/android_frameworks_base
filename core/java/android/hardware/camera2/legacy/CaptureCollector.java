@@ -59,6 +59,9 @@ public class CaptureCollector {
         private boolean mFailedPreview = false;
         private boolean mCompleted = false;
         private boolean mPreviewCompleted = false;
+        // Outputs that lost their buffer before the capture started; CameraDeviceState
+        // accepts a buffer error only while capturing.
+        private final ArrayList<Surface> mLostSurfaces = new ArrayList<>();
 
         public CaptureHolder(RequestHolder request, LegacyRequest legacyHolder) {
             mRequest = request;
@@ -126,6 +129,27 @@ public class CaptureCollector {
             }
         }
 
+        private void startCapture() {
+            mHasStarted = true;
+            CaptureCollector.this.mDeviceState.setCaptureStart(mRequest, mTimestamp,
+                    CameraDeviceState.NO_CAPTURE_ERROR);
+            for (Surface s : mLostSurfaces) {
+                reportBufferLost(s);
+            }
+            mLostSurfaces.clear();
+        }
+
+        // A capture that fails before it starts gets ERROR_CAMERA_REQUEST from
+        // tryComplete, which covers any buffer still queued here.
+        public void reportBufferLost(Surface surface) {
+            if (mHasStarted) {
+                CaptureCollector.this.mDeviceState.setCaptureResult(mRequest, /*result*/null,
+                        CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_BUFFER, surface);
+            } else {
+                mLostSurfaces.add(surface);
+            }
+        }
+
         public void setJpegTimestamp(long timestamp) {
             if (DEBUG) {
                 Log.d(TAG, "setJpegTimestamp - called for request " + mRequest.getRequestId());
@@ -146,9 +170,7 @@ public class CaptureCollector {
             }
 
             if (!mHasStarted) {
-                mHasStarted = true;
-                CaptureCollector.this.mDeviceState.setCaptureStart(mRequest, mTimestamp,
-                        CameraDeviceState.NO_CAPTURE_ERROR);
+                startCapture();
             }
 
             tryComplete();
@@ -206,9 +228,7 @@ public class CaptureCollector {
 
             if (!needsJpeg) {
                 if (!mHasStarted) {
-                    mHasStarted = true;
-                    CaptureCollector.this.mDeviceState.setCaptureStart(mRequest, mTimestamp,
-                            CameraDeviceState.NO_CAPTURE_ERROR);
+                    startCapture();
                 }
             }
 
@@ -537,6 +557,33 @@ public class CaptureCollector {
             }
             h.setPreviewTimestamp(timestamp);
             return new Pair<>(h.mRequest, h.mTimestamp);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Report that a preview-path output of an active capture lost its buffer.
+     *
+     * <p>Marks the request's output abandoned and sends {@code ERROR_CAMERA_BUFFER} for
+     * {@code surface}, as CaptureHolder.tryComplete does for a dropped buffer. A request with
+     * jpeg targets draws its preview before the shutter starts the capture, so the error is
+     * held until the capture starts.</p>
+     *
+     * @param request the request whose output was lost.
+     * @param surface the output surface that received no buffer.
+     */
+    public void reportPreviewBufferLost(RequestHolder request, Surface surface) {
+        request.setOutputAbandoned();
+        final ReentrantLock lock = this.mLock;
+        lock.lock();
+        try {
+            for (CaptureHolder h : mActiveRequests) {
+                if (h.mRequest == request) {
+                    h.reportBufferLost(surface);
+                    break;
+                }
+            }
         } finally {
             lock.unlock();
         }
