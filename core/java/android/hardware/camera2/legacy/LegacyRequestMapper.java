@@ -391,7 +391,8 @@ public class LegacyRequestMapper {
                     params.setGpsLatitude(location.getLatitude());
                     params.setGpsLongitude(location.getLongitude());
                     params.setGpsProcessingMethod(location.getProvider().toUpperCase());
-                    params.setGpsTimestamp(location.getTime());
+                    // Location.getTime() is in milliseconds; setGpsTimestamp takes seconds.
+                    params.setGpsTimestamp(location.getTime() / 1000);
                 } else {
                     Log.w(TAG, "Incomplete GPS parameters provided in location " + location);
                 }
