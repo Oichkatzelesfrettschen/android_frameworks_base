@@ -246,7 +246,13 @@ public class RequestThreadManager {
                         }
                     }
                 } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                    // Only a jpeg target reaches the throwing calls above, and
+                    // jpegProduced() already completed this capture, so the lost
+                    // buffer is reported here.
                     Log.w(TAG, "Surface abandoned, dropping frame. ", e);
+                    holder.setOutputAbandoned();
+                    mDeviceState.setCaptureResult(holder, /*result*/null,
+                            CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_BUFFER, s);
                 }
             }
 
