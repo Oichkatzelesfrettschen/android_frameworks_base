@@ -184,9 +184,11 @@ public class LegacyFaceDetectMapper {
                 }
 
                 mFaceDetectEnabled = enableFaceDetect;
-                mFaceDetectScenePriority = sceneMode == CONTROL_SCENE_MODE_FACE_PRIORITY;
-                mFaceDetectReporting = fdMode != STATISTICS_FACE_DETECT_MODE_OFF;
             }
+
+            // Reporting follows every request, also while the camera1 detector stays on.
+            mFaceDetectScenePriority = sceneMode == CONTROL_SCENE_MODE_FACE_PRIORITY;
+            mFaceDetectReporting = fdMode != STATISTICS_FACE_DETECT_MODE_OFF;
         }
     }
 
