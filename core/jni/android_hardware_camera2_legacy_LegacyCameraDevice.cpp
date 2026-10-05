@@ -207,6 +207,14 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
         return err;
     }
 
+    // Every failure between dequeue and queue hands the buffer back through
+    // cancelBuffer; otherwise each failed frame keeps one of the queue's
+    // buffers and a later dequeue blocks once all are held.
+    auto cancelDequeued = [&anw, anb](status_t res) -> status_t {
+        anw->cancelBuffer(anw.get(), anb, /*fenceFd*/ -1);
+        return res;
+    };
+
     sp<GraphicBuffer> buf(GraphicBuffer::from(anb));
     uint32_t grallocBufWidth = buf->getWidth();
     uint32_t grallocBufHeight = buf->getHeight();
@@ -215,7 +223,7 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
         ALOGE("%s: Received gralloc buffer with bad dimensions %" PRIu32 "x%" PRIu32
                 ", expecting dimensions %zu x %zu",  __FUNCTION__, grallocBufWidth,
                 grallocBufHeight, width, height);
-        return BAD_VALUE;
+        return cancelDequeued(BAD_VALUE);
     }
 
     int32_t bufFmt = 0;
@@ -224,7 +232,7 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
         ALOGE("%s: Error while querying surface pixel format %s (%d).", __FUNCTION__,
                 strerror(-err), err);
         OVERRIDE_SURFACE_ERROR(err);
-        return err;
+        return cancelDequeued(err);
     }
 
     uint64_t tmpSize = (pixelFmt == HAL_PIXEL_FORMAT_BLOB) ? grallocBufWidth :
@@ -242,7 +250,7 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
     if (tmpSize > SIZE_MAX) {
         ALOGE("%s: Overflow calculating size, buffer with dimens %zu x %zu is absurdly large...",
                 __FUNCTION__, width, height);
-        return BAD_VALUE;
+        return cancelDequeued(BAD_VALUE);
     }
 
     size_t totalSizeBytes = tmpSize;
@@ -253,12 +261,12 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
             if (bufferLength < totalSizeBytes) {
                 ALOGE("%s: PixelBuffer size %zu too small for given dimensions",
                         __FUNCTION__, bufferLength);
-                return BAD_VALUE;
+                return cancelDequeued(BAD_VALUE);
             }
             uint8_t* img = NULL;
             ALOGV("%s: Lock buffer from %p for write", __FUNCTION__, anw.get());
             err = buf->lock(GRALLOC_USAGE_SW_WRITE_OFTEN, (void**)(&img));
-            if (err != NO_ERROR) return err;
+            if (err != NO_ERROR) return cancelDequeued(err);
 
             uint8_t* yPlane = img;
             uint8_t* uPlane = img + height * width;
@@ -275,12 +283,12 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
             if (bufferLength < totalSizeBytes) {
                 ALOGE("%s: PixelBuffer size %zu too small for given dimensions",
                         __FUNCTION__, bufferLength);
-                return BAD_VALUE;
+                return cancelDequeued(BAD_VALUE);
             }
 
             if ((width & 1) || (height & 1)) {
                 ALOGE("%s: Dimens %zu x %zu are not divisible by 2.", __FUNCTION__, width, height);
-                return BAD_VALUE;
+                return cancelDequeued(BAD_VALUE);
             }
 
             uint8_t* img = NULL;
@@ -289,7 +297,7 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
             if (err != NO_ERROR) {
                 ALOGE("%s: Error %s (%d) while locking gralloc buffer for write.", __FUNCTION__,
                         strerror(-err), err);
-                return err;
+                return cancelDequeued(err);
             }
 
             uint32_t stride = buf->getStride();
@@ -313,7 +321,7 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
             if (bufferLength < totalSizeBytes) {
                 ALOGE("%s: PixelBuffer size %zu too small for given dimensions",
                         __FUNCTION__, bufferLength);
-                return BAD_VALUE;
+                return cancelDequeued(BAD_VALUE);
             }
             android_ycbcr ycbcr = android_ycbcr();
             ALOGV("%s: Lock buffer from %p for write", __FUNCTION__, anw.get());
@@ -322,7 +330,7 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
             if (err != NO_ERROR) {
                 ALOGE("%s: Failed to lock ycbcr buffer, error %s (%d).", __FUNCTION__,
                         strerror(-err), err);
-                return err;
+                return cancelDequeued(err);
             }
             rgbToYuv420(pixelBuffer, width, height, &ycbcr);
             break;
@@ -340,14 +348,14 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
             if (totalJpegSize > totalSizeBytes) {
                 ALOGE("%s: Pixel buffer needs size %zu, cannot fit in gralloc buffer of size %zu",
                         __FUNCTION__, totalJpegSize, totalSizeBytes);
-                return BAD_VALUE;
+                return cancelDequeued(BAD_VALUE);
             }
 
             err = buf->lock(GRALLOC_USAGE_SW_WRITE_OFTEN, (void**)(&img));
             if (err != NO_ERROR) {
                 ALOGE("%s: Failed to lock buffer, error %s (%d).", __FUNCTION__, strerror(-err),
                         err);
-                return err;
+                return cancelDequeued(err);
             }
 
             memcpy(img, pixelBuffer, bufferLength);
@@ -356,7 +364,7 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
         }
         default: {
             ALOGE("%s: Invalid pixel format in produceFrame: %x", __FUNCTION__, pixelFmt);
-            return BAD_VALUE;
+            return cancelDequeued(BAD_VALUE);
         }
     }
 
@@ -364,7 +372,7 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
     err = buf->unlock();
     if (err != NO_ERROR) {
         ALOGE("%s: Failed to unlock buffer, error %s (%d).", __FUNCTION__, strerror(-err), err);
-        return err;
+        return cancelDequeued(err);
     }
 
     ALOGV("%s: Queue buffer to %p", __FUNCTION__, anw.get());
