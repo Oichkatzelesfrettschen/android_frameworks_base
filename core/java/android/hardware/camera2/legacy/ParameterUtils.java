@@ -804,7 +804,8 @@ public class ParameterUtils {
                     bestZoomIndex = i;
                     reportedCropRegion = availableReportedCropRegions.get(i);
                     previewCropRegion = availablePreviewCropRegions.get(i);
-                    reportedZoomRatio = zoomRatios.get(i);
+                    // getZoomRatios() reports hundredths; camera2 reports the ratio itself.
+                    reportedZoomRatio = zoomRatios.get(i) / (float) ZOOM_RATIO_MULTIPLIER;
                 } else {
                     break;
                 }
@@ -819,8 +820,8 @@ public class ParameterUtils {
                     ", reported zoom ratio = " + reportedZoomRatio);
         }
 
-        return new ZoomData(bestZoomIndex, reportedCropRegion,
-                previewCropRegion, reportedZoomRatio);
+        return new ZoomData(bestZoomIndex, previewCropRegion,
+                reportedCropRegion, reportedZoomRatio);
     }
 
     /**
