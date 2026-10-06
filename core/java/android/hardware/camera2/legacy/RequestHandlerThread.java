@@ -21,6 +21,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.MessageQueue;
+import android.os.Process;
 
 public class RequestHandlerThread extends HandlerThread {
 
@@ -38,7 +39,11 @@ public class RequestHandlerThread extends HandlerThread {
     private volatile Handler mHandler;
 
     public RequestHandlerThread(String name, Handler.Callback callback) {
-        super(name, Thread.MAX_PRIORITY);
+        this(name, Process.THREAD_PRIORITY_DEFAULT, callback);
+    }
+
+    public RequestHandlerThread(String name, int priority, Handler.Callback callback) {
+        super(name, priority);
         mCallback = callback;
     }
 

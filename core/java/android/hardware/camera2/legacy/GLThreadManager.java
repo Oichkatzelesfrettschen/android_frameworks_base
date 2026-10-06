@@ -21,6 +21,7 @@ import android.hardware.camera2.impl.CameraDeviceImpl;
 import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.Message;
+import android.os.Process;
 import android.util.Log;
 import android.util.Pair;
 import android.util.Size;
@@ -152,7 +153,8 @@ public class GLThreadManager {
     public GLThreadManager(int cameraId, int facing, CameraDeviceState state) {
         mTextureRenderer = new SurfaceTextureRenderer(facing);
         TAG = String.format("CameraDeviceGLThread-%d", cameraId);
-        mGLHandlerThread = new RequestHandlerThread(TAG, mGLHandlerCb);
+        mGLHandlerThread = new RequestHandlerThread(TAG, Process.THREAD_PRIORITY_DISPLAY,
+                mGLHandlerCb);
         mDeviceState = state;
     }
 
