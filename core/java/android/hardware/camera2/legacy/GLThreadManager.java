@@ -153,7 +153,7 @@ public class GLThreadManager {
     public GLThreadManager(int cameraId, int facing, CameraDeviceState state) {
         mTextureRenderer = new SurfaceTextureRenderer(facing);
         TAG = String.format("CameraDeviceGLThread-%d", cameraId);
-        mGLHandlerThread = new RequestHandlerThread(TAG, Process.THREAD_PRIORITY_URGENT_DISPLAY,
+        mGLHandlerThread = new RequestHandlerThread(TAG, Process.THREAD_PRIORITY_DISPLAY,
                 mGLHandlerCb);
         mDeviceState = state;
     }
