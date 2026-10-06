@@ -21,12 +21,15 @@ import android.hardware.camera2.impl.CameraDeviceImpl;
 import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.Message;
+import android.os.Process;
 import android.util.Log;
 import android.util.Pair;
 import android.util.Size;
 import android.view.Surface;
 
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Map;
 
 import static com.android.internal.util.Preconditions.*;
 
@@ -65,12 +68,14 @@ public class GLThreadManager {
         public final ConditionVariable condition;
         public final Collection<Pair<Surface, Size>> surfaces;
         public final CaptureCollector collector;
+        public final Map<Surface, Long> streamUseCases;
 
         public ConfigureHolder(ConditionVariable condition, Collection<Pair<Surface,
-                Size>> surfaces, CaptureCollector collector) {
+                Size>> surfaces, CaptureCollector collector, Map<Surface, Long> streamUseCases) {
             this.condition = condition;
             this.surfaces = surfaces;
             this.collector = collector;
+            this.streamUseCases = Map.copyOf(streamUseCases);
         }
     }
 
@@ -90,7 +95,7 @@ public class GLThreadManager {
                     case MSG_NEW_CONFIGURATION:
                         ConfigureHolder configure = (ConfigureHolder) msg.obj;
                         mTextureRenderer.cleanupEGLContext();
-                        mTextureRenderer.configureSurfaces(configure.surfaces);
+                        mTextureRenderer.configureSurfaces(configure.surfaces, configure.streamUseCases);
                         mCaptureCollector = checkNotNull(configure.collector);
                         configure.condition.open();
                         mConfigured = true;
@@ -152,7 +157,8 @@ public class GLThreadManager {
     public GLThreadManager(int cameraId, int facing, CameraDeviceState state) {
         mTextureRenderer = new SurfaceTextureRenderer(facing);
         TAG = String.format("CameraDeviceGLThread-%d", cameraId);
-        mGLHandlerThread = new RequestHandlerThread(TAG, mGLHandlerCb);
+        mGLHandlerThread = new RequestHandlerThread(TAG, Process.THREAD_PRIORITY_URGENT_DISPLAY,
+                mGLHandlerCb);
         mDeviceState = state;
     }
 
@@ -220,8 +226,6 @@ public class GLThreadManager {
         Handler handler = mGLHandlerThread.getHandler();
         if (!handler.hasMessages(MSG_NEW_RECORD_FRAME)) {
             handler.sendMessage(handler.obtainMessage(MSG_NEW_RECORD_FRAME));
-        } else {
-            Log.e(TAG, "GLThread dropping recording frame.  Not consuming frames quickly enough!");
         }
     }
 
@@ -243,14 +247,51 @@ public class GLThreadManager {
         mGLHandlerThread.getHandler().sendEmptyMessage(MSG_CLEAR_UNPAIRED_TARGETS);
     }
 
-    /**
-     * Get the recording stream input texture of the current configuration.
-     *
-     * @return an {@link android.graphics.SurfaceTexture}, or {@code null} before the first
-     *         configuration.
-     */
-    public SurfaceTexture getCurrentRecordSurfaceTexture() {
-        return mTextureRenderer.getRecordSurfaceTexture();
+    private void runOnGlAndWait(Runnable operation) {
+        ConditionVariable completion = new ConditionVariable(false);
+        RuntimeException[] failure = new RuntimeException[1];
+        if (!mGLHandlerThread.getHandler().post(() -> {
+            try {
+                operation.run();
+            } catch (RuntimeException exception) {
+                failure[0] = exception;
+            } finally {
+                completion.open();
+            }
+        })) throw new IllegalStateException("GL thread stops before recording operation");
+        completion.block();
+        if (failure[0] != null) throw failure[0];
+    }
+
+    /** Create the importer before camera callbacks can queue GL draws. */
+    public long createIonRecordingBridge(int width, int height) {
+        long[] result = new long[1];
+        runOnGlAndWait(() -> result[0] = mTextureRenderer.createIonRecordingBridge(this,
+                width, height));
+        return result[0];
+    }
+
+    /** Select the ring after the HAL finishes its recording startup. */
+    public void startIonRecordingDraws() {
+        runOnGlAndWait(() -> {
+            mTextureRenderer.setRecordSource(true);
+            queueNewRecordFrame();
+        });
+    }
+
+    /** Disconnect terminal outputs from the request thread to wake blocked GL dequeues. */
+    public void disconnectIonOutputQueues() {
+        mTextureRenderer.disconnectIonOutputQueues();
+    }
+
+    /** Finish queued draws before stopping the HAL recording pool. */
+    public void stopIonRecordingDraws() {
+        runOnGlAndWait(() -> mTextureRenderer.setRecordSource(false));
+    }
+
+    /** Free imported images after HAL callbacks and GPU releases drain. */
+    public void destroyIonRecordingBridge() {
+        runOnGlAndWait(() -> mTextureRenderer.destroyIonRecordingBridge());
     }
 
     /**
@@ -263,11 +304,16 @@ public class GLThreadManager {
      */
     public void setConfigurationAndWait(Collection<Pair<Surface, Size>> surfaces,
                                         CaptureCollector collector) {
+        setConfigurationAndWait(surfaces, collector, Collections.emptyMap());
+    }
+
+    public void setConfigurationAndWait(Collection<Pair<Surface, Size>> surfaces,
+            CaptureCollector collector, Map<Surface, Long> streamUseCases) {
         checkNotNull(collector, "collector must not be null");
         Handler handler = mGLHandlerThread.getHandler();
 
         final ConditionVariable condition = new ConditionVariable(/*closed*/false);
-        ConfigureHolder configure = new ConfigureHolder(condition, surfaces, collector);
+        ConfigureHolder configure = new ConfigureHolder(condition, surfaces, collector, streamUseCases);
 
         Message m = handler.obtainMessage(MSG_NEW_CONFIGURATION, /*arg1*/0, /*arg2*/0, configure);
         handler.sendMessage(m);
