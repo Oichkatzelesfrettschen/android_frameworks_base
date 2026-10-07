@@ -190,13 +190,48 @@ public class NotificationShadeWindowView extends WindowRootView {
 
     @Override
     public void onDraw(Canvas canvas) {
-        super.onDraw(canvas);
-        if (DEBUG) {
-            Paint pt = new Paint();
-            pt.setColor(0x80FFFF00);
-            pt.setStrokeWidth(12.0f);
-            pt.setStyle(Paint.Style.STROKE);
-            canvas.drawRect(0, 0, canvas.getWidth(), canvas.getHeight(), pt);
+        Trace.traceBegin(Trace.TRACE_TAG_VIEW, "NotificationShadeWindowView#onDraw");
+        try {
+            super.onDraw(canvas);
+            if (DEBUG) {
+                Paint pt = new Paint();
+                pt.setColor(0x80FFFF00);
+                pt.setStrokeWidth(12.0f);
+                pt.setStyle(Paint.Style.STROKE);
+                canvas.drawRect(0, 0, canvas.getWidth(), canvas.getHeight(), pt);
+            }
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW);
+        }
+    }
+
+    @Override
+    public void invalidate() {
+        Trace.traceBegin(Trace.TRACE_TAG_VIEW, "NotificationShadeWindowView#invalidate");
+        try {
+            super.invalidate();
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW);
+        }
+    }
+
+    @Override
+    public void invalidate(Rect dirty) {
+        Trace.traceBegin(Trace.TRACE_TAG_VIEW, "NotificationShadeWindowView#invalidateRect");
+        try {
+            super.invalidate(dirty);
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW);
+        }
+    }
+
+    @Override
+    public void invalidate(int left, int top, int right, int bottom) {
+        Trace.traceBegin(Trace.TRACE_TAG_VIEW, "NotificationShadeWindowView#invalidateBounds");
+        try {
+            super.invalidate(left, top, right, bottom);
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW);
         }
     }
 
@@ -591,4 +626,3 @@ public class NotificationShadeWindowView extends WindowRootView {
     };
 
 }
-

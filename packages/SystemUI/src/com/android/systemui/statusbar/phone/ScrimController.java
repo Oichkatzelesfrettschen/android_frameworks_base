@@ -721,6 +721,15 @@ public class ScrimController implements ViewTreeObserver.OnPreDrawListener, Dump
     }
 
     private void calculateAndUpdatePanelExpansion() {
+        Trace.traceBegin(Trace.TRACE_TAG_VIEW, "ScrimController#calculateAndUpdatePanelExpansion");
+        try {
+            updatePanelExpansion();
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW);
+        }
+    }
+
+    private void updatePanelExpansion() {
         float panelExpansionFraction = mRawPanelExpansionFraction;
         if (mPanelScrimMinFraction < 1.0f) {
             panelExpansionFraction = Math.max(
@@ -1173,6 +1182,15 @@ public class ScrimController implements ViewTreeObserver.OnPreDrawListener, Dump
     }
 
     protected void updateScrims() {
+        Trace.traceBegin(Trace.TRACE_TAG_VIEW, "ScrimController#updateScrims");
+        try {
+            applyScrimState();
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW);
+        }
+    }
+
+    private void applyScrimState() {
         // Make sure we have the right gradients and their opacities will satisfy GAR.
         if (mNeedsDrawableColorUpdate) {
             mNeedsDrawableColorUpdate = false;

@@ -241,6 +241,12 @@ constructor(
     @VisibleForTesting
     val updateBlurCallback =
         Choreographer.FrameCallback {
+            updateBlurFrame()
+        }
+
+    private fun updateBlurFrame() {
+        Trace.traceBegin(Trace.TRACE_TAG_VIEW, "NotificationShadeDepthController#updateBlurFrame")
+        try {
             updateScheduled = false
             val (blur, zoomOut) = computeBlurAndZoomOut()
             val opaque = if (notificationShadeBlur()) false else scrimsVisible && !blursDisabledForAppLaunch
@@ -249,11 +255,26 @@ constructor(
             lastAppliedBlur = blur
             wallpaperController.setNotificationShadeZoom(zoomOut)
             listeners.forEach {
-                it.onWallpaperZoomOutChanged(zoomOut)
-                it.onBlurRadiusChanged(blur)
+                Trace.traceBegin(Trace.TRACE_TAG_VIEW,
+                    "NotificationShadeDepthController#onWallpaperZoomOutChanged")
+                try {
+                    it.onWallpaperZoomOutChanged(zoomOut)
+                } finally {
+                    Trace.traceEnd(Trace.TRACE_TAG_VIEW)
+                }
+                Trace.traceBegin(Trace.TRACE_TAG_VIEW,
+                    "NotificationShadeDepthController#onBlurRadiusChanged")
+                try {
+                    it.onBlurRadiusChanged(blur)
+                } finally {
+                    Trace.traceEnd(Trace.TRACE_TAG_VIEW)
+                }
             }
             notificationShadeWindowController.setBackgroundBlurRadius(blur)
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW)
         }
+    }
 
     /** Animate blurs when unlocking. */
     private val keyguardStateCallback =
@@ -338,7 +359,13 @@ constructor(
         notificationShadeWindowController.setScrimsVisibilityListener {
             // Stop blur effect when scrims is opaque to avoid unnecessary GPU composition.
             visibility ->
-            scrimsVisible = visibility == ScrimController.OPAQUE
+            Trace.traceBegin(Trace.TRACE_TAG_VIEW,
+                "NotificationShadeDepthController#onScrimsVisibilityChanged")
+            try {
+                scrimsVisible = visibility == ScrimController.OPAQUE
+            } finally {
+                Trace.traceEnd(Trace.TRACE_TAG_VIEW)
+            }
         }
         shadeAnimation.setStiffness(SpringForce.STIFFNESS_LOW)
         shadeAnimation.setDampingRatio(SpringForce.DAMPING_RATIO_NO_BOUNCY)
@@ -366,6 +393,16 @@ constructor(
 
     /** Update blurs when pulling down the shade */
     override fun onPanelExpansionChanged(event: ShadeExpansionChangeEvent) {
+        Trace.traceBegin(Trace.TRACE_TAG_VIEW,
+            "NotificationShadeDepthController#onPanelExpansionChanged")
+        try {
+            updatePanelExpansion(event)
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW)
+        }
+    }
+
+    private fun updatePanelExpansion(event: ShadeExpansionChangeEvent) {
         val rawFraction = event.fraction
         val tracking = event.tracking
         val timestamp = SystemClock.elapsedRealtimeNanos()

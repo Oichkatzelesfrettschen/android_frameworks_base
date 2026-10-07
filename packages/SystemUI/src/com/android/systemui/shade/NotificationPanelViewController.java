@@ -4229,11 +4229,17 @@ public final class NotificationPanelViewController implements ShadeSurface, Dump
 
     @Override
     public void updateExpansionAndVisibility() {
-        if (!SceneContainerFlag.isEnabled()) {
-            mShadeExpansionStateManager.onPanelExpansionChanged(
-                    mExpandedFraction, isExpanded(), isTracking());
+        Trace.traceBegin(Trace.TRACE_TAG_VIEW,
+                "NotificationPanelViewController#updateExpansionAndVisibility");
+        try {
+            if (!SceneContainerFlag.isEnabled()) {
+                mShadeExpansionStateManager.onPanelExpansionChanged(
+                        mExpandedFraction, isExpanded(), isTracking());
+            }
+            updateVisibility();
+        } finally {
+            Trace.traceEnd(Trace.TRACE_TAG_VIEW);
         }
-        updateVisibility();
     }
 
     @Override
@@ -5402,4 +5408,3 @@ public final class NotificationPanelViewController implements ShadeSurface, Dump
         }
     }
 }
-
