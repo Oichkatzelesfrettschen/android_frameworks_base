@@ -355,34 +355,18 @@ status_t BootAnimation::initTexture(FileMap* map, int* width, int* height,
     const int w = bitmapInfo.width;
     const int h = bitmapInfo.height;
 
-    int tw = 1 << (31 - __builtin_clz(w));
-    int th = 1 << (31 - __builtin_clz(h));
-    if (tw < w) tw <<= 1;
-    if (th < h) th <<= 1;
-
+    // The texture holds exactly the image because drawTexturedQuad() samples it with UVs
+    // 0..1. OpenGL ES 2.0 section 3.8.2 completes a non-power-of-two texture whose wrap modes
+    // are CLAMP_TO_EDGE and whose minification filter samples no mipmap, as set below.
     switch (bitmapInfo.format) {
         case ANDROID_BITMAP_FORMAT_RGBA_8888:
-            if (!mUseNpotTextures && (tw != w || th != h)) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA,
-                        GL_UNSIGNED_BYTE, nullptr);
-                glTexSubImage2D(GL_TEXTURE_2D, 0,
-                        0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-            } else {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
-                        GL_UNSIGNED_BYTE, pixels);
-            }
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA,
+                    GL_UNSIGNED_BYTE, pixels);
             break;
 
         case ANDROID_BITMAP_FORMAT_RGB_565:
-            if (!mUseNpotTextures && (tw != w || th != h)) {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, tw, th, 0, GL_RGB,
-                        GL_UNSIGNED_SHORT_5_6_5, nullptr);
-                glTexSubImage2D(GL_TEXTURE_2D, 0,
-                        0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, pixels);
-            } else {
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB,
-                        GL_UNSIGNED_SHORT_5_6_5, pixels);
-            }
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB,
+                    GL_UNSIGNED_SHORT_5_6_5, pixels);
             break;
         default:
             break;
@@ -1339,20 +1323,6 @@ bool BootAnimation::movie() {
     }
     if (!anyPartHasClock) {
         mClockEnabled = false;
-    }
-
-    // Check if npot textures are supported
-    mUseNpotTextures = false;
-    String8 gl_extensions;
-    const char* exts = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
-    if (!exts) {
-        glGetError();
-    } else {
-        gl_extensions.setTo(exts);
-        if ((gl_extensions.find("GL_ARB_texture_non_power_of_two") != -1) ||
-            (gl_extensions.find("GL_OES_texture_npot") != -1)) {
-            mUseNpotTextures = true;
-        }
     }
 
     // Blend required to draw time on top of animation frames.

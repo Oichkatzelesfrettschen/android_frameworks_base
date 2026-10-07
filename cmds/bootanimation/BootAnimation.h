@@ -217,7 +217,6 @@ private:
     int         mMaxHeight = 0;
     int         mCurrentInset;
     int         mTargetInset;
-    bool        mUseNpotTextures = false;
     EGLDisplay  mDisplay;
     EGLDisplay  mContext;
     EGLDisplay  mSurface;
