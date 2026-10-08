@@ -604,9 +604,17 @@ Frame EglManager::beginFrame(EGLSurface surface) {
 void EglManager::damageFrame(const Frame& frame, const SkRect& dirty) {
 #ifdef EGL_KHR_partial_update
     if (EglExtensions.setDamage && mSwapBehavior == SwapBehavior::BufferAge) {
-        EGLint rects[4];
+        static const bool duplicateDamageRect =
+                property_get_bool("ro.hwui.adreno305_duplicate_damage_rect", false);
+        EGLint rects[8];
         frame.map(dirty, rects);
-        if (!eglSetDamageRegionKHR(mEglDisplay, frame.mSurface, rects, 1)) {
+        EGLint rectCount = 1;
+        if (duplicateDamageRect) {
+            // The Adreno tiled-rendering path preserves GMEM bins for multi-rect damage.
+            frame.map(dirty, rects + 4);
+            rectCount = 2;
+        }
+        if (!eglSetDamageRegionKHR(mEglDisplay, frame.mSurface, rects, rectCount)) {
             LOG_ALWAYS_FATAL("Failed to set damage region on surface %p, error=%s",
                              (void*)frame.mSurface, eglErrorString());
         }
