@@ -55,6 +55,10 @@
 #include <arm_neon.h>
 #endif
 
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+#include "LegacyCameraIonRecording.h"
+#endif
+
 using namespace android;
 
 // fully-qualified class name
@@ -1026,6 +1030,162 @@ static jint LegacyCameraDevice_nativeStopRecordingStream(JNIEnv* env, jobject th
     return NO_ERROR;
 }
 
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+static const char kIonBridgeOwner = 0;
+#endif
+
+static jlong LegacyCameraDevice_nativeCreateIonRecordingBridge(JNIEnv* env, jobject,
+        jobject manager, jint width, jint height) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    if (manager == nullptr || width <= 0 || height <= 0) return 0;
+    sp<IonRecordingStreamBridge> bridge = new IonRecordingStreamBridge(env, manager, width, height);
+    status_t error = bridge->initialize();
+    if (error != NO_ERROR) {
+        jniThrowExceptionFmt(env, "java/lang/IllegalStateException",
+                "HAL1 ION recording import initialization fails: %d", error);
+        return 0;
+    }
+    bridge->incStrong(&kIonBridgeOwner);
+    return reinterpret_cast<jlong>(bridge.get());
+#else
+    jniThrowException(env, "java/lang/UnsupportedOperationException", "HAL1 ION import disabled");
+    return 0;
+#endif
+}
+
+static jint LegacyCameraDevice_nativeStartIonRecordingStream(JNIEnv* env, jobject,
+        jobject camera, jlong handle) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    if (handle == 0) return BAD_VALUE;
+    sp<IonRecordingStreamBridge> bridge = reinterpret_cast<IonRecordingStreamBridge*>(handle);
+    sp<CameraRecordingFrameSink> previous;
+    sp<Camera> nativeCamera = android_hardware_Camera_setRecordingFrameSink(env, camera,
+            bridge, &previous);
+    if (nativeCamera == nullptr) return NO_INIT;
+    status_t error = nativeCamera->setVideoBufferMode(
+            hardware::ICamera::VIDEO_BUFFER_MODE_DATA_CALLBACK_YUV);
+    if (error == NO_ERROR) error = nativeCamera->startRecording();
+    if (error != NO_ERROR) {
+        android_hardware_Camera_setRecordingFrameSink(env, camera, previous, nullptr);
+        bridge->deactivate();
+    }
+    return error;
+#else
+    return INVALID_OPERATION;
+#endif
+}
+
+static jint LegacyCameraDevice_nativeStopIonRecordingStream(JNIEnv* env, jobject,
+        jobject camera) {
+    sp<CameraRecordingFrameSink> previous;
+    sp<Camera> nativeCamera = android_hardware_Camera_setRecordingFrameSink(env, camera,
+            nullptr, &previous);
+    if (nativeCamera == nullptr) return NO_INIT;
+    if (previous != nullptr) previous->deactivate();
+    nativeCamera->stopRecording();
+    return NO_ERROR;
+}
+
+static jlong LegacyCameraDevice_nativeBindIonRecordingFrame(JNIEnv* env, jobject,
+        jlong handle, jint texture) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    if (handle == 0) return 0;
+    nsecs_t result = reinterpret_cast<IonRecordingStreamBridge*>(handle)->bind(texture);
+    if (result < 0) jniThrowExceptionFmt(env, "java/lang/IllegalStateException",
+            "HAL1 ION recording texture bind fails: %" PRId64, result);
+    return result;
+#else
+    return INVALID_OPERATION;
+#endif
+}
+
+static void LegacyCameraDevice_nativeIonRecordingFrameDrawn(JNIEnv* env, jobject, jlong handle) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    if (handle == 0) return;
+    status_t error = reinterpret_cast<IonRecordingStreamBridge*>(handle)->drawn();
+    if (error != NO_ERROR) jniThrowExceptionFmt(env, "java/lang/IllegalStateException",
+            "HAL1 ION recording fence fails: %d", error);
+#endif
+}
+
+static void LegacyCameraDevice_nativeDestroyIonRecordingBridge(JNIEnv* env, jobject,
+        jlong handle) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    if (handle == 0) return;
+    auto* bridge = reinterpret_cast<IonRecordingStreamBridge*>(handle);
+    status_t error = bridge->destroyImages(env);
+    bridge->decStrong(&kIonBridgeOwner);
+    if (error != NO_ERROR) jniThrowExceptionFmt(env, "java/lang/IllegalStateException",
+            "HAL1 ION recording teardown fails: %d", error);
+#endif
+}
+
+static jint LegacyCameraDevice_nativeDescribeIonOutput(JNIEnv* env, jobject,
+        jobject surface, jint index) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    sp<Surface> nativeSurface = android_view_Surface_getSurface(env, surface);
+    if (nativeSurface == nullptr || index < 0) return BAD_VALUE;
+    int usage = 0;
+    status_t error = nativeSurface->query(NATIVE_WINDOW_CONSUMER_USAGE_BITS, &usage);
+    if (error != NO_ERROR) return error;
+    int minimumUndequeued = 0;
+    error = nativeSurface->query(NATIVE_WINDOW_MIN_UNDEQUEUED_BUFFERS, &minimumUndequeued);
+    if (error != NO_ERROR) return error;
+    int format = 0;
+    error = nativeSurface->query(NATIVE_WINDOW_FORMAT, &format);
+    if (error != NO_ERROR) return error;
+    const String8 consumer = nativeSurface->getIGraphicBufferProducer()->getConsumerName();
+    ALOGI("ION GL output index=%d consumer=%s usage=0x%x format=0x%x min-undequeued=%d",
+          index, consumer.c_str(), usage, format, minimumUndequeued);
+    return NO_ERROR;
+#else
+    return INVALID_OPERATION;
+#endif
+}
+
+static jint LegacyCameraDevice_nativeDisconnectIonOutput(JNIEnv* env, jobject,
+        jobject surface) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    sp<Surface> nativeSurface = android_view_Surface_getSurface(env, surface);
+    if (nativeSurface == nullptr) return BAD_VALUE;
+    // Terminal cleanup cancels producer waits before joining the GL thread.
+    return nativeSurface->disconnect(NATIVE_WINDOW_API_EGL);
+#else
+    return INVALID_OPERATION;
+#endif
+}
+
+static jint LegacyCameraDevice_nativeSetIonOutputFifo(JNIEnv* env, jobject,
+        jobject surface, jboolean enabled) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    sp<Surface> nativeSurface = android_view_Surface_getSurface(env, surface);
+    if (nativeSurface == nullptr) return BAD_VALUE;
+    // BufferQueue retains blocking and nondroppable flags when the deadline becomes negative.
+    // Consumer abandonment wakes dequeue; EGL disconnect precedes default restoration.
+    status_t error = nativeSurface->setDequeueTimeout(enabled ? 1 : -1);
+    if (error == NO_ERROR && enabled) {
+        error = nativeSurface->getIGraphicBufferProducer()->setAsyncMode(false);
+        if (error == NO_ERROR) error = nativeSurface->setDequeueTimeout(-1);
+    }
+    ALOGI("ION GL output FIFO enabled=%d timeout_ns=-1 status=%d", enabled, error);
+    return error;
+#else
+    return INVALID_OPERATION;
+#endif
+}
+
+static jint LegacyCameraDevice_nativeDiscardIonPreviewFrame(JNIEnv* env, jobject,
+        jobject texture) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    if (texture == nullptr) return BAD_VALUE;
+    sp<SurfaceTexture> nativeTexture = SurfaceTexture_getSurfaceTexture(env, texture);
+    if (nativeTexture == nullptr) return NO_INIT;
+    return nativeTexture->discardNextBuffer();
+#else
+    return INVALID_OPERATION;
+#endif
+}
+
 static jint LegacyCameraDevice_nativeGetJpegFooterSize(JNIEnv* env, jobject thiz) {
     ALOGV("nativeGetJpegFooterSize");
     return static_cast<jint>(sizeof(struct camera3_jpeg_blob));
@@ -1034,6 +1194,26 @@ static jint LegacyCameraDevice_nativeGetJpegFooterSize(JNIEnv* env, jobject thiz
 } // extern "C"
 
 static const JNINativeMethod gCameraDeviceMethods[] = {
+    { "nativeDescribeIonOutput", "(Landroid/view/Surface;I)I",
+      (void *)LegacyCameraDevice_nativeDescribeIonOutput },
+    { "nativeSetIonOutputFifo", "(Landroid/view/Surface;Z)I",
+      (void *)LegacyCameraDevice_nativeSetIonOutputFifo },
+    { "nativeDisconnectIonOutput", "(Landroid/view/Surface;)I",
+      (void *)LegacyCameraDevice_nativeDisconnectIonOutput },
+    { "nativeCreateIonRecordingBridge", "(Landroid/hardware/camera2/legacy/GLThreadManager;II)J",
+      (void *)LegacyCameraDevice_nativeCreateIonRecordingBridge },
+    { "nativeStartIonRecordingStream", "(Landroid/hardware/Camera;J)I",
+      (void *)LegacyCameraDevice_nativeStartIonRecordingStream },
+    { "nativeStopIonRecordingStream", "(Landroid/hardware/Camera;)I",
+      (void *)LegacyCameraDevice_nativeStopIonRecordingStream },
+    { "nativeBindIonRecordingFrame", "(JI)J",
+      (void *)LegacyCameraDevice_nativeBindIonRecordingFrame },
+    { "nativeIonRecordingFrameDrawn", "(J)V",
+      (void *)LegacyCameraDevice_nativeIonRecordingFrameDrawn },
+    { "nativeDestroyIonRecordingBridge", "(J)V",
+      (void *)LegacyCameraDevice_nativeDestroyIonRecordingBridge },
+    { "nativeDiscardIonPreviewFrame", "(Landroid/graphics/SurfaceTexture;)I",
+      (void *)LegacyCameraDevice_nativeDiscardIonPreviewFrame },
     { "nativeConnectSurface",
     "(Landroid/view/Surface;)I",
     (void *)LegacyCameraDevice_nativeConnectSurface },

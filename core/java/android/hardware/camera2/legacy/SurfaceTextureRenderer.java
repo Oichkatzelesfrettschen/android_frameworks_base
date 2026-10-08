@@ -27,6 +27,7 @@ import android.opengl.EGLSurface;
 import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
 import android.opengl.Matrix;
+import android.os.SystemProperties;
 import android.util.Log;
 import android.util.Pair;
 import android.util.Size;
@@ -37,6 +38,8 @@ import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Map;
 import java.util.List;
 
 /**
@@ -69,9 +72,18 @@ public class SurfaceTextureRenderer {
         EGLSurface eglSurface;
         int width;
         int height;
+        boolean ionOutputFifo;
+        long streamUseCase;
+        long outputProbeOriginNs;
+        long outputProbeOverflow;
+        long outputSwapRejected;
+        long[] outputSwapCounts;
+        long[] outputSwapWallNs;
+        long[] outputSwapMaxWallNs;
     }
 
     private List<EGLSurfaceHolder> mSurfaces = new ArrayList<EGLSurfaceHolder>();
+    private volatile Surface[] mIonFifoOutputs = new Surface[0];
     private List<EGLSurfaceHolder> mConversionSurfaces = new ArrayList<EGLSurfaceHolder>();
 
     private ByteBuffer mPBufferPixels;
@@ -84,8 +96,10 @@ public class SurfaceTextureRenderer {
      * paired with the next queued request when one is waiting, otherwise into the targets of
      * the last paired request without completing a request.
      */
-    private volatile SurfaceTexture mRecordSurfaceTexture;
+    private long mIonRecordingBridge;
+    private Size mIonRecordingSize;
     private boolean mRecordSource = false;
+    private boolean mDiscardPreviewFrames;
     private List<Long> mLastTargetSurfaceIds = new ArrayList<>();
     private long mLastPairedTimestamp = 0;
     private long mLastRecordArrivalNs = 0;
@@ -276,14 +290,20 @@ public class SurfaceTextureRenderer {
     private void drawFrame(SurfaceTexture st, int textureId, int width, int height,
             int flipType) throws LegacyExceptionUtils.BufferQueueAbandonedException {
         checkGlError("onDrawFrame start");
-        st.getTransformMatrix(mSTMatrix);
+        if (st != null) {
+            st.getTransformMatrix(mSTMatrix);
+        } else {
+            Matrix.setIdentityM(mSTMatrix, 0);
+            mSTMatrix[5] = -1;
+            mSTMatrix[13] = 1;
+        }
 
         Matrix.setIdentityM(mMVPMatrix, /*smOffset*/0);
 
         // Find intermediate buffer dimensions
         Size dimens;
         try {
-            dimens = LegacyCameraDevice.getTextureSize(st);
+            dimens = st == null ? mIonRecordingSize : LegacyCameraDevice.getTextureSize(st);
         } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
             // Should never hit this.
             throw new IllegalStateException("Surface abandoned, skipping drawFrame...", e);
@@ -408,20 +428,22 @@ public class SurfaceTextureRenderer {
 
         mTextureID = textures[0];
         mRecordTextureID = textures[1];
-        for (int texture : textures) {
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture);
-            checkGlError("glBindTexture");
+        for (int texture : textures) configureExternalTexture(texture);
+    }
 
-            GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                    GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
-            GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
-                    GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
-            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S,
-                    GLES20.GL_CLAMP_TO_EDGE);
-            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T,
-                    GLES20.GL_CLAMP_TO_EDGE);
-            checkGlError("glTexParameter");
-        }
+    private void configureExternalTexture(int texture) {
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture);
+        checkGlError("glBindTexture");
+
+        GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
+        GLES20.glTexParameterf(GLES11Ext.GL_TEXTURE_EXTERNAL_OES,
+                GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S,
+                GLES20.GL_CLAMP_TO_EDGE);
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T,
+                GLES20.GL_CLAMP_TO_EDGE);
+        checkGlError("glTexParameter");
     }
 
     private int getTextureId() {
@@ -429,6 +451,7 @@ public class SurfaceTextureRenderer {
     }
 
     private void clearState() {
+        mIonFifoOutputs = new Surface[0];
         mSurfaces.clear();
         for (EGLSurfaceHolder holder : mConversionSurfaces) {
             try {
@@ -443,10 +466,7 @@ public class SurfaceTextureRenderer {
             mSurfaceTexture.release();
         }
         mSurfaceTexture = null;
-        if (mRecordSurfaceTexture != null) {
-            mRecordSurfaceTexture.release();
-        }
-        mRecordSurfaceTexture = null;
+        destroyIonRecordingBridge();
         logRecordFrameCounts();
         mRecordSource = false;
         mLastTargetSurfaceIds = new ArrayList<>();
@@ -547,6 +567,7 @@ public class SurfaceTextureRenderer {
     }
 
     private void releaseEGLContext() {
+        destroyIonRecordingBridge();
         if (mEGLDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(mEGLDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE,
                     EGL14.EGL_NO_CONTEXT);
@@ -554,6 +575,16 @@ public class SurfaceTextureRenderer {
                 for (EGLSurfaceHolder holder : mSurfaces) {
                     if (holder.eglSurface != null) {
                         EGL14.eglDestroySurface(mEGLDisplay, holder.eglSurface);
+                    }
+                    if (holder.ionOutputFifo) {
+                        holder.ionOutputFifo = false;
+                        try {
+                            LegacyExceptionUtils.throwOnError(
+                                    LegacyCameraDevice.nativeSetIonOutputFifo(
+                                            holder.surface, false));
+                        } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                            Log.w(TAG, "ION FIFO output abandoned after EGL disconnect", e);
+                        }
                     }
                 }
             }
@@ -669,14 +700,137 @@ public class SurfaceTextureRenderer {
         return mSurfaceTexture;
     }
 
-    /**
-     * Return the second input texture, which the HAL1 recording stream feeds while it is the
-     * frame source.
-     *
-     * @return a {@link SurfaceTexture}, or {@code null} before the first configuration.
-     */
-    public SurfaceTexture getRecordSurfaceTexture() {
-        return mRecordSurfaceTexture;
+    /** Create the checked ION importer on the current GL context. */
+    public long createIonRecordingBridge(GLThreadManager manager, int width, int height) {
+        if (mIonRecordingBridge != 0) throw new IllegalStateException("Recording bridge active");
+        // Stream use cases identify downstream purpose behind HW_TEXTURE consumers.
+        // Recording preserves frames; preview keeps the latest viewfinder image.
+        int fifoOutput = SystemProperties.getInt("debug.camera.ion.fifo_output", -2);
+        boolean outputProbe = SystemProperties.getBoolean("debug.camera.ion.stage_rates", false);
+        if (fifoOutput < -2 || fifoOutput >= mSurfaces.size()) {
+            throw new IllegalArgumentException("ION FIFO output index exceeds GL output count");
+        }
+        if (fifoOutput == -2 || fifoOutput >= 0 || outputProbe) {
+            EGLSurface previousDraw = EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW);
+            EGLSurface previousRead = EGL14.eglGetCurrentSurface(EGL14.EGL_READ);
+            try {
+                for (int index = 0; index < mSurfaces.size(); index++) {
+                    EGLSurfaceHolder holder = mSurfaces.get(index);
+                    LegacyExceptionUtils.throwOnError(
+                            LegacyCameraDevice.nativeDescribeIonOutput(holder.surface, index));
+                    Log.i(TAG, "ION GL output index=" + index + " size="
+                            + holder.width + "x" + holder.height + " stream-use-case="
+                            + holder.streamUseCase);
+                    if (LegacyStreamUseCase.usesFifo(holder.streamUseCase, fifoOutput, index)) {
+                        makeCurrent(holder.eglSurface);
+                        if (!EGL14.eglSwapInterval(mEGLDisplay, 1)) {
+                            throw new IllegalStateException("ION FIFO swap interval rejected");
+                        }
+                        holder.ionOutputFifo = true;
+                        List<Surface> fifoSurfaces = new ArrayList<>();
+                        for (EGLSurfaceHolder output : mSurfaces) {
+                            if (output.ionOutputFifo) fifoSurfaces.add(output.surface);
+                        }
+                        mIonFifoOutputs = fifoSurfaces.toArray(new Surface[0]);
+                        LegacyExceptionUtils.throwOnError(
+                                LegacyCameraDevice.nativeSetIonOutputFifo(holder.surface, true));
+                    }
+                }
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                throw new IllegalStateException("ION FIFO output abandoned", e);
+            } finally {
+                if (!EGL14.eglMakeCurrent(mEGLDisplay, previousDraw, previousRead, mEGLContext)) {
+                    throw new IllegalStateException("ION output diagnostic context restore fails");
+                }
+            }
+        }
+        if (mRecordTextureID == 0) {
+            int[] texture = new int[1];
+            GLES20.glGenTextures(1, texture, 0);
+            mRecordTextureID = texture[0];
+            configureExternalTexture(mRecordTextureID);
+        }
+        mIonRecordingSize = new Size(width, height);
+        mIonRecordingBridge = LegacyCameraDevice.nativeCreateIonRecordingBridge(manager,
+                width, height);
+        if (mIonRecordingBridge == 0) throw new IllegalStateException("ION importer unavailable");
+        if (outputProbe) {
+            for (EGLSurfaceHolder holder : mSurfaces) {
+                holder.outputProbeOriginNs = 0;
+                holder.outputProbeOverflow = 0;
+                holder.outputSwapRejected = 0;
+                holder.outputSwapCounts = new long[64];
+                holder.outputSwapWallNs = new long[64];
+                holder.outputSwapMaxWallNs = new long[64];
+            }
+        }
+        return mIonRecordingBridge;
+    }
+
+    /** Cancel terminal output waits before the request thread joins the GL thread. */
+    public void disconnectIonOutputQueues() {
+        for (Surface surface : mIonFifoOutputs) {
+            try {
+                LegacyExceptionUtils.throwOnError(
+                        LegacyCameraDevice.nativeDisconnectIonOutput(surface));
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException exception) {
+                Log.w(TAG, "ION terminal output already disconnected", exception);
+            }
+        }
+    }
+
+    /** Destroy imported images before the EGL context that owns them. */
+    public void destroyIonRecordingBridge() {
+        if (mIonRecordingBridge != 0) {
+            long bridge = mIonRecordingBridge;
+            mIonRecordingBridge = 0;
+            try {
+                LegacyCameraDevice.nativeDestroyIonRecordingBridge(bridge);
+            } finally {
+                logOutputSwapCounts();
+                GLES20.glDeleteTextures(1, new int[] {mRecordTextureID}, 0);
+                mRecordTextureID = 0;
+            }
+        }
+        mIonRecordingSize = null;
+        setRecordSource(false);
+    }
+
+    // Successful swaps count queued output buffers; a fenced source lease can skip drawing.
+    private void recordOutputSwap(EGLSurfaceHolder holder, long startedNs) {
+        long completedNs = System.nanoTime();
+        if (holder.outputProbeOriginNs == 0) holder.outputProbeOriginNs = completedNs;
+        long second = (completedNs - holder.outputProbeOriginNs) / 1000000000L;
+        if (second >= holder.outputSwapCounts.length) {
+            holder.outputProbeOverflow++;
+            return;
+        }
+        int index = (int) second;
+        long wallNs = completedNs - startedNs;
+        holder.outputSwapCounts[index]++;
+        holder.outputSwapWallNs[index] += wallNs;
+        holder.outputSwapMaxWallNs[index] = Math.max(holder.outputSwapMaxWallNs[index], wallNs);
+    }
+
+    private void logOutputSwapCounts() {
+        for (int output = 0; output < mSurfaces.size(); output++) {
+            EGLSurfaceHolder holder = mSurfaces.get(output);
+            if (holder.outputSwapCounts == null) continue;
+            Log.i(TAG, "ION output stage index=" + output + " size=" + holder.width + "x"
+                    + holder.height + " origin_ns=" + holder.outputProbeOriginNs
+                    + " overflow=" + holder.outputProbeOverflow
+                    + " rejected=" + holder.outputSwapRejected);
+            for (int second = 0; second < holder.outputSwapCounts.length; second++) {
+                if (holder.outputSwapCounts[second] == 0) continue;
+                Log.i(TAG, "ION output stage index=" + output + " second=" + second
+                        + " swaps=" + holder.outputSwapCounts[second]
+                        + " swap_wall_ns=" + holder.outputSwapWallNs[second]
+                        + " swap_max_wall_ns=" + holder.outputSwapMaxWallNs[second]);
+            }
+            holder.outputSwapCounts = null;
+            holder.outputSwapWallNs = null;
+            holder.outputSwapMaxWallNs = null;
+        }
     }
 
     /**
@@ -686,6 +840,8 @@ public class SurfaceTextureRenderer {
     public void setRecordSource(boolean record) {
         logRecordFrameCounts();
         mRecordSource = record;
+        mDiscardPreviewFrames = record
+                && SystemProperties.getBoolean("debug.camera.ion.discard_preview", false);
         mLastTargetSurfaceIds = new ArrayList<>();
         mLastPairedTimestamp = 0;
         mLastRecordArrivalNs = System.nanoTime();
@@ -697,6 +853,11 @@ public class SurfaceTextureRenderer {
      * @param surfaces a {@link Collection} of surfaces.
      */
     public void configureSurfaces(Collection<Pair<Surface, Size>> surfaces) {
+        configureSurfaces(surfaces, Collections.emptyMap());
+    }
+
+    public void configureSurfaces(Collection<Pair<Surface, Size>> surfaces,
+            Map<Surface, Long> streamUseCases) {
         releaseEGLContext();
 
         if (surfaces == null || surfaces.size() == 0) {
@@ -711,6 +872,8 @@ public class SurfaceTextureRenderer {
             try {
                 EGLSurfaceHolder holder = new EGLSurfaceHolder();
                 holder.surface = s;
+                holder.streamUseCase = streamUseCases.getOrDefault(s,
+                        LegacyStreamUseCase.DEFAULT);
                 holder.width = surfaceSize.getWidth();
                 holder.height = surfaceSize.getHeight();
                 if (LegacyCameraDevice.needsConversion(s)) {
@@ -748,7 +911,6 @@ public class SurfaceTextureRenderer {
 
         initializeGLState();
         mSurfaceTexture = new SurfaceTexture(getTextureId());
-        mRecordSurfaceTexture = new SurfaceTexture(mRecordTextureID);
 
     }
 
@@ -759,8 +921,8 @@ public class SurfaceTextureRenderer {
      *
      * <p>
      * The frame source is the preview texture returned from {@link #getSurfaceTexture()},
-     * or, after {@code setRecordSource(true)}, the recording stream texture returned from
-     * {@link #getRecordSurfaceTexture()}. A frame from the texture that is not the source only
+     * or, after {@code setRecordSource(true)}, the HAL ION EGLImage ring.
+     * A preview frame received while recording only
      * releases its buffer. A recording frame that finds no queued request draws into the
      * targets of the last paired request with its own timestamp and completes no request, so
      * outputs receive every recording frame while results follow the request rate; that draw
@@ -783,66 +945,79 @@ public class SurfaceTextureRenderer {
 
         checkGlError("before updateTexImage");
 
-        SurfaceTexture st = recordFrame ? mRecordSurfaceTexture : mSurfaceTexture;
-        if (st == null) {
-            return;
-        }
-        st.updateTexImage();
+        SurfaceTexture st = recordFrame ? null : mSurfaceTexture;
+        if (recordFrame && (!mRecordSource || mIonRecordingBridge == 0)) return;
+        if (!recordFrame && st == null) return;
+        long timestamp;
         if (recordFrame) {
+            timestamp = LegacyCameraDevice.nativeBindIonRecordingFrame(mIonRecordingBridge,
+                    mRecordTextureID);
+            if (timestamp < 0) {
+                throw new IllegalStateException("HAL1 ION recording bind fails: " + timestamp);
+            }
+            if (timestamp == 0) return;
             mLastRecordArrivalNs = System.nanoTime();
-        } else if (mRecordSource
-                && System.nanoTime() - mLastRecordArrivalNs > RECORD_STALL_NS) {
-            Log.w(TAG, "No recording frame for " + RECORD_STALL_NS / 1000000
-                    + " ms, drawing from preview");
-            setRecordSource(false);
-        }
-        if (recordFrame != mRecordSource) {
-            return;
+        } else {
+            if (mDiscardPreviewFrames) {
+                int status = LegacyCameraDevice.nativeDiscardIonPreviewFrame(st);
+                if (status < 0) {
+                    throw new IllegalStateException("Unused HAL1 preview discard fails: " + status);
+                }
+            } else {
+                st.updateTexImage();
+            }
+            if (mRecordSource && System.nanoTime() - mLastRecordArrivalNs > RECORD_STALL_NS) {
+                throw new IllegalStateException("HAL1 ION recording stream stalls");
+            }
+            if (mRecordSource) return;
+            timestamp = st.getTimestamp();
         }
         int textureId = recordFrame ? mRecordTextureID : mTextureID;
 
-        long timestamp = st.getTimestamp();
+        try {
+            Pair<RequestHolder, Long> captureHolder = targetCollector.previewCaptured(timestamp);
 
-        Pair<RequestHolder, Long> captureHolder = targetCollector.previewCaptured(timestamp);
-
-        // No preview request queued, drop frame.
-        if (captureHolder == null) {
-            if (recordFrame && !mLastTargetSurfaceIds.isEmpty()
-                    && timestamp - mLastPairedTimestamp < UNPAIRED_DRAW_WINDOW_NS) {
-                drawTargets(st, textureId, mLastTargetSurfaceIds, timestamp, /*request*/null,
-                        /*includeConversions*/false);
-                mUnpairedRecordFrames++;
+            // No preview request queued, drop frame.
+            if (captureHolder == null) {
+                if (recordFrame && !mLastTargetSurfaceIds.isEmpty()
+                        && timestamp - mLastPairedTimestamp < UNPAIRED_DRAW_WINDOW_NS) {
+                    drawTargets(st, textureId, mLastTargetSurfaceIds, timestamp, /*request*/null,
+                            /*includeConversions*/false);
+                    mUnpairedRecordFrames++;
+                    return;
+                }
+                if (recordFrame) {
+                    mDroppedRecordFrames++;
+                }
+                if (DEBUG) {
+                    Log.d(TAG, "Dropping preview frame.");
+                }
                 return;
             }
+
+            RequestHolder request = captureHolder.first;
+
+            Collection<Surface> targetSurfaces = request.getHolderTargets();
+
+            List<Long> targetSurfaceIds = new ArrayList<>();
+            try {
+                targetSurfaceIds = LegacyCameraDevice.getSurfaceIds(targetSurfaces);
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                Log.w(TAG, "Surface abandoned, dropping frame. ", e);
+                request.setOutputAbandoned();
+            }
+
+            drawTargets(st, textureId, targetSurfaceIds, captureHolder.second, request,
+                    /*includeConversions*/true);
             if (recordFrame) {
-                mDroppedRecordFrames++;
+                mLastTargetSurfaceIds = targetSurfaceIds;
+                mLastPairedTimestamp = timestamp;
+                mPairedRecordFrames++;
             }
-            if (DEBUG) {
-                Log.d(TAG, "Dropping preview frame.");
-            }
-            return;
+            targetCollector.previewProduced();
+        } finally {
+            if (recordFrame) LegacyCameraDevice.nativeIonRecordingFrameDrawn(mIonRecordingBridge);
         }
-
-        RequestHolder request = captureHolder.first;
-
-        Collection<Surface> targetSurfaces = request.getHolderTargets();
-
-        List<Long> targetSurfaceIds = new ArrayList<>();
-        try {
-            targetSurfaceIds = LegacyCameraDevice.getSurfaceIds(targetSurfaces);
-        } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
-            Log.w(TAG, "Surface abandoned, dropping frame. ", e);
-            request.setOutputAbandoned();
-        }
-
-        drawTargets(st, textureId, targetSurfaceIds, captureHolder.second, request,
-                /*includeConversions*/true);
-        if (recordFrame) {
-            mLastTargetSurfaceIds = targetSurfaceIds;
-            mLastPairedTimestamp = timestamp;
-            mPairedRecordFrames++;
-        }
-        targetCollector.previewProduced();
 
     }
 
@@ -866,7 +1041,13 @@ public class SurfaceTextureRenderer {
                     drawFrame(st, textureId, holder.width, holder.height,
                             (mFacing == CameraCharacteristics.LENS_FACING_FRONT) ?
                                     FLIP_TYPE_HORIZONTAL : FLIP_TYPE_NONE);
-                    swapBuffers(holder.eglSurface);
+                    boolean outputProbe = st == null && holder.outputSwapCounts != null;
+                    long swapStartedNs = outputProbe ? System.nanoTime() : 0;
+                    boolean swapped = swapBuffers(holder.eglSurface);
+                    if (outputProbe) {
+                        if (swapped) recordOutputSwap(holder, swapStartedNs);
+                        else holder.outputSwapRejected++;
+                    }
                 } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
                     Log.w(TAG, "Surface abandoned, dropping frame. ", e);
                     if (request != null) {

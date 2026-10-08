@@ -110,8 +110,9 @@ private:
     Mutex       mLock;
 
     /*
-     * Receiver of CAMERA_MSG_VIDEO_FRAME data. mRecordingSinkLock is separate
-     * from mLock so a sink copying a frame never blocks the Java callbacks.
+     * mRecordingSinkLock guards delivery through CAMERA_MSG_VIDEO_FRAME so
+     * replacing the sink waits for callbacks to finish entering its frame queue.
+     * The camera lock is acquired before the sink lock to match release().
      */
     Mutex       mRecordingSinkLock;
     sp<CameraRecordingFrameSink> mRecordingSink;
@@ -398,20 +399,18 @@ void JNICameraContext::postDataTimestamp(nsecs_t timestamp, int32_t msgType, con
     if (msgType == CAMERA_MSG_VIDEO_FRAME) {
         // A recording frame belongs to the HAL's video buffer pool: it goes to the
         // installed sink, which returns it, or straight back to the HAL.
-        sp<CameraRecordingFrameSink> sink;
-        {
-            Mutex::Autolock _l(mRecordingSinkLock);
-            sink = mRecordingSink;
-        }
         sp<Camera> camera = getCamera();
         if (camera == nullptr) {
             return;
         }
-        if (sink != nullptr) {
-            sink->onRecordingFrame(camera, timestamp, dataPtr);
-        } else {
-            camera->releaseRecordingFrame(dataPtr);
+        {
+            Mutex::Autolock _l(mRecordingSinkLock);
+            if (mRecordingSink != nullptr) {
+                mRecordingSink->onRecordingFrame(camera, timestamp, dataPtr);
+                return;
+            }
         }
+        camera->releaseRecordingFrame(dataPtr);
         return;
     }
     // TODO: plumb up to Java. For now, just drop the timestamp

@@ -41,6 +41,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -133,14 +134,8 @@ public class RequestThreadManager {
     private Size mRecordOutputSize;
     private boolean mRecordStreamRunning = false;
 
-    /*
-     * With no encoder output, video-mode 2 feeds the GL renderer's second input texture from
-     * the recording stream, so GL outputs (a CameraX surface processor, a preview) receive the
-     * recording rate. The texture's default buffer size is the video size, which drawFrame
-     * reads as the intermediate size when it letterboxes.
-     */
-    private SurfaceTexture mRecordTexture;
-    private Surface mRecordTextureSurface;
+    // The HAL ION recording ring feeds GL outputs at the recording cadence.
+    private long mIonRecordingBridge;
     private Size mGlRecordSize;
     private boolean mGlRecordStreamRunning = false;
     // Set when a start fails, until the next configureOutputs.
@@ -152,11 +147,13 @@ public class RequestThreadManager {
     private static class ConfigureHolder {
         public final ConditionVariable condition;
         public final Collection<Pair<Surface, Size>> surfaces;
+        public final Map<Surface, Long> streamUseCases;
 
         public ConfigureHolder(ConditionVariable condition, Collection<Pair<Surface,
-                Size>> surfaces) {
+                Size>> surfaces, Map<Surface, Long> streamUseCases) {
             this.condition = condition;
             this.surfaces = surfaces;
+            this.streamUseCases = Map.copyOf(streamUseCases);
         }
     }
 
@@ -340,13 +337,6 @@ public class RequestThreadManager {
                 }
             };
 
-    private final SurfaceTexture.OnFrameAvailableListener mRecordFrameCallback =
-            new SurfaceTexture.OnFrameAvailableListener() {
-                @Override
-                public void onFrameAvailable(SurfaceTexture surfaceTexture) {
-                    mGLThreadManager.queueNewRecordFrame();
-                }
-            };
 
     private void stopPreview() {
         if (VERBOSE) {
@@ -468,21 +458,37 @@ public class RequestThreadManager {
      * video-mode 2.
      */
     private void updateGlRecordStream(RequestHolder holder, boolean repeating) {
-        if (mRecordOutput != null || mRecordTextureSurface == null || mGlRecordStreamFailed) {
+        if (mRecordOutput != null || mGlRecordSize == null || mGlRecordStreamFailed) {
             return;
         }
         boolean active = LegacyRequestMapper.isHtcVideo60Active(mParams);
         if (active && !mGlRecordStreamRunning) {
+            boolean started = false;
             try {
-                LegacyCameraDevice.startRecordingStream(mCamera, mRecordTextureSurface,
+                mIonRecordingBridge = mGLThreadManager.createIonRecordingBridge(
                         mGlRecordSize.getWidth(), mGlRecordSize.getHeight());
+                LegacyExceptionUtils.throwOnError(LegacyCameraDevice.nativeStartIonRecordingStream(
+                        mCamera, mIonRecordingBridge));
+                started = true;
+                mGLThreadManager.startIonRecordingDraws();
                 mGlRecordStreamRunning = true;
-                mGLThreadManager.setRecordSource(true);
                 Log.i(TAG, "Recording stream feeds the GL outputs at " + mGlRecordSize);
             } catch (LegacyExceptionUtils.BufferQueueAbandonedException | RuntimeException e) {
-                // The GL outputs stay on the preview stream at its rate.
-                Log.w(TAG, "Recording stream unavailable for the GL outputs", e);
+                if (started) {
+                    try {
+                        LegacyExceptionUtils.throwOnError(
+                                LegacyCameraDevice.nativeStopIonRecordingStream(mCamera));
+                    } catch (LegacyExceptionUtils.BufferQueueAbandonedException
+                            | RuntimeException stopFailure) {
+                        e.addSuppressed(stopFailure);
+                    }
+                }
+                if (mIonRecordingBridge != 0) {
+                    mGLThreadManager.destroyIonRecordingBridge();
+                    mIonRecordingBridge = 0;
+                }
                 mGlRecordStreamFailed = true;
+                throw new IllegalStateException("HAL1 ION recording stream unavailable", e);
             }
         } else if (!active && mGlRecordStreamRunning && repeating) {
             stopGlRecordStream();
@@ -494,13 +500,15 @@ public class RequestThreadManager {
             return;
         }
         mGlRecordStreamRunning = false;
-        if (mGLThreadManager != null) {
-            mGLThreadManager.setRecordSource(false);
-        }
+        mGLThreadManager.stopIonRecordingDraws();
         try {
-            LegacyCameraDevice.stopRecordingStream(mCamera, mRecordTextureSurface);
-        } catch (LegacyExceptionUtils.BufferQueueAbandonedException | RuntimeException e) {
-            Log.w(TAG, "Recording stream stop failed for the GL outputs", e);
+            LegacyExceptionUtils.throwOnError(LegacyCameraDevice.nativeStopIonRecordingStream(
+                    mCamera));
+        } catch (LegacyExceptionUtils.BufferQueueAbandonedException | RuntimeException exception) {
+            Log.e(TAG, "ION recording stream stop fails", exception);
+        } finally {
+            mGLThreadManager.destroyIonRecordingBridge();
+            mIonRecordingBridge = 0;
         }
     }
 
@@ -546,7 +554,8 @@ public class RequestThreadManager {
         }
     }
 
-    private void configureOutputs(Collection<Pair<Surface, Size>> outputs) {
+    private void configureOutputs(Collection<Pair<Surface, Size>> outputs,
+            Map<Surface, Long> streamUseCases) {
         if (DEBUG) {
             String outputsStr = outputs == null ? "null" : (outputs.size() + " surfaces");
             Log.d(TAG, "configureOutputs with " + outputsStr);
@@ -592,11 +601,6 @@ public class RequestThreadManager {
         mPreviewTexture = null;
         mRecordOutput = null;
         mRecordOutputSize = null;
-        if (mRecordTextureSurface != null) {
-            mRecordTextureSurface.release();
-        }
-        mRecordTextureSurface = null;
-        mRecordTexture = null;
         mGlRecordSize = null;
         mGlRecordStreamFailed = false;
 
@@ -776,7 +780,7 @@ public class RequestThreadManager {
         for (Surface p : mPreviewOutputs) {
             previews.add(new Pair<>(p, previewSizeIter.next()));
         }
-        mGLThreadManager.setConfigurationAndWait(previews, mCaptureCollector);
+        mGLThreadManager.setConfigurationAndWait(previews, mCaptureCollector, streamUseCases);
 
         for (Surface p : mPreviewOutputs) {
             try {
@@ -790,13 +794,6 @@ public class RequestThreadManager {
         mPreviewTexture = mGLThreadManager.getCurrentSurfaceTexture();
         if (mPreviewTexture != null) {
             mPreviewTexture.setOnFrameAvailableListener(mPreviewCallback);
-        }
-        mRecordTexture = mGLThreadManager.getCurrentRecordSurfaceTexture();
-        if (mRecordTexture != null && mGlRecordSize != null) {
-            mRecordTexture.setDefaultBufferSize(mGlRecordSize.getWidth(),
-                    mGlRecordSize.getHeight());
-            mRecordTexture.setOnFrameAvailableListener(mRecordFrameCallback);
-            mRecordTextureSurface = new Surface(mRecordTexture);
         }
 
         try {
@@ -990,7 +987,7 @@ public class RequestThreadManager {
                         break;
                     }
 
-                    configureOutputs(config.surfaces);
+                    configureOutputs(config.surfaces, config.streamUseCases);
                     config.condition.open();
                     if (DEBUG) {
                         long totalTime = SystemClock.elapsedRealtimeNanos() - startTime;
@@ -1258,6 +1255,9 @@ public class RequestThreadManager {
                     break;
                 case MSG_CLEANUP:
                     mCleanup = true;
+                    if (mGLThreadManager != null) {
+                        mGLThreadManager.disconnectIonOutputQueues();
+                    }
                     try {
                         boolean success = mCaptureCollector.waitForEmpty(JPEG_FRAME_TIMEOUT,
                                 TimeUnit.MILLISECONDS);
@@ -1276,10 +1276,6 @@ public class RequestThreadManager {
                         } catch (RuntimeException e) {
                             Log.e(TAG, "Recording stream stop failed during cleanup", e);
                         }
-                    }
-                    if (mRecordTextureSurface != null) {
-                        mRecordTextureSurface.release();
-                        mRecordTextureSurface = null;
                     }
                     if (mGLThreadManager != null) {
                         mGLThreadManager.quit();
@@ -1407,9 +1403,14 @@ public class RequestThreadManager {
      * @param outputs a {@link java.util.Collection} of outputs to configure.
      */
     public void configure(Collection<Pair<Surface, Size>> outputs) {
+        configure(outputs, Collections.emptyMap());
+    }
+
+    public void configure(Collection<Pair<Surface, Size>> outputs,
+            Map<Surface, Long> streamUseCases) {
         Handler handler = mRequestThread.waitAndGetHandler();
         final ConditionVariable condition = new ConditionVariable(/*closed*/false);
-        ConfigureHolder holder = new ConfigureHolder(condition, outputs);
+        ConfigureHolder holder = new ConfigureHolder(condition, outputs, streamUseCases);
         handler.sendMessage(handler.obtainMessage(MSG_CONFIGURE_OUTPUTS, 0, 0, holder));
         condition.block();
     }
