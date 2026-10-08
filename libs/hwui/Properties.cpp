@@ -159,6 +159,11 @@ bool Properties::load() {
     useBufferAge = base::GetBoolProperty(PROPERTY_USE_BUFFER_AGE, true);
     enablePartialUpdates = base::GetBoolProperty(PROPERTY_ENABLE_PARTIAL_UPDATES, true);
 
+    if (base::GetBoolProperty(PROPERTY_LOG_PARTIAL_UPDATE_CONFIG, false)) {
+        ALOGI("HWUI_RENDER_PROPERTIES use_buffer_age=%d use_partial_updates=%d", useBufferAge,
+              enablePartialUpdates);
+    }
+
     filterOutTestOverhead = base::GetBoolProperty(PROPERTY_FILTER_TEST_OVERHEAD, false);
 
     skpCaptureEnabled = debuggingEnabled && base::GetBoolProperty(PROPERTY_CAPTURE_SKP_ENABLED, false);
