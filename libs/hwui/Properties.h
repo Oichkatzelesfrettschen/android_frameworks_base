@@ -123,6 +123,11 @@ enum DebugLevel {
  */
 #define PROPERTY_ENABLE_PARTIAL_UPDATES "debug.hwui.use_partial_updates"
 
+/**
+ * Logs the partial-update values consumed by RenderThread. Default is false.
+ */
+#define PROPERTY_LOG_PARTIAL_UPDATE_CONFIG "debug.hwui.log_partial_update_config"
+
 #define PROPERTY_FILTER_TEST_OVERHEAD "debug.hwui.filter_test_overhead"
 
 /**
