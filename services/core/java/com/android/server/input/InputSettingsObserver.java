@@ -158,7 +158,16 @@ class InputSettingsObserver extends ContentObserver {
 
     @Override
     public void onChange(boolean selfChange, Uri uri) {
-        mObservers.get(uri).accept("setting changed");
+        // A provider notifies on its table URI when it deletes rows, so a URI that
+        // names no observed key refreshes every observed setting.
+        final Consumer<String> observer = mObservers.get(uri);
+        if (observer != null) {
+            observer.accept("setting changed");
+            return;
+        }
+        for (Consumer<String> each : mObservers.values()) {
+            each.accept("setting changed");
+        }
     }
 
     private boolean getBoolean(String settingName, boolean defaultValue) {
