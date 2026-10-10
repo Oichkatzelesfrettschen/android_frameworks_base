@@ -34,11 +34,14 @@ import android.os.Handler;
 import android.os.UserHandle;
 import android.provider.DeviceConfig;
 import android.provider.Settings;
+import android.util.ArraySet;
 import android.util.Log;
 import android.view.ViewConfiguration;
 
 import lineageos.providers.LineageSettings;
 
+import java.util.Collection;
+import java.util.Collections;
 import java.util.Map;
 import java.util.function.Consumer;
 
@@ -158,15 +161,30 @@ class InputSettingsObserver extends ContentObserver {
 
     @Override
     public void onChange(boolean selfChange, Uri uri) {
-        // A provider notifies on its table URI when it deletes rows, so a URI that
-        // names no observed key refreshes every observed setting.
-        final Consumer<String> observer = mObservers.get(uri);
-        if (observer != null) {
-            observer.accept("setting changed");
-            return;
+        onChange(selfChange, Collections.singletonList(uri), 0 /* flags */);
+    }
+
+    /**
+     * A provider notifies on its table URI when it deletes rows. ContentService delivers a
+     * table notification once for every observed key registered beneath that table, batched
+     * into one call, so a batch that holds a null URI or a URI naming no observed key
+     * refreshes every observed setting once, and any other batch runs each named observer once.
+     */
+    @Override
+    public void onChange(boolean selfChange, Collection<Uri> uris, int flags) {
+        final ArraySet<Consumer<String>> matched = new ArraySet<>();
+        for (Uri uri : uris) {
+            final Consumer<String> observer = uri == null ? null : mObservers.get(uri);
+            if (observer == null) {
+                for (Consumer<String> each : mObservers.values()) {
+                    each.accept("setting changed");
+                }
+                return;
+            }
+            matched.add(observer);
         }
-        for (Consumer<String> each : mObservers.values()) {
-            each.accept("setting changed");
+        for (Consumer<String> observer : matched) {
+            observer.accept("setting changed");
         }
     }
 
