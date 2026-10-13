@@ -380,7 +380,7 @@ static status_t produceFrame(const sp<ANativeWindow>& anw,
     if (err != NO_ERROR) {
         ALOGE("%s: Failed to queue buffer, error %s (%d).", __FUNCTION__, strerror(-err), err);
         OVERRIDE_SURFACE_ERROR(err);
-        return err;
+        return cancelDequeued(err);
     }
     return NO_ERROR;
 }

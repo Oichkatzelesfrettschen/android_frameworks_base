@@ -471,13 +471,14 @@ public class LegacyRequestMapper {
                 break;
             case CONTROL_CAPTURE_INTENT_ZERO_SHUTTER_LAG:
             case CONTROL_CAPTURE_INTENT_MANUAL:
-                captureIntent = CONTROL_CAPTURE_INTENT_PREVIEW;
                 Log.w(TAG, "Unsupported control.captureIntent value " + captureIntent
                         + "; default to PREVIEW");
-            default:
                 captureIntent = CONTROL_CAPTURE_INTENT_PREVIEW;
+                break;
+            default:
                 Log.w(TAG, "Unknown control.captureIntent value " + captureIntent
                         + "; default to PREVIEW");
+                captureIntent = CONTROL_CAPTURE_INTENT_PREVIEW;
         }
 
         return captureIntent;
