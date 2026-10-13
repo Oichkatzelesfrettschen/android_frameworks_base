@@ -113,6 +113,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
     private static class CameraLooper implements Runnable, AutoCloseable {
         private final int mCameraId;
         private final int mClientUid;
+        private final int mOomScoreOffset;
         private Looper mLooper;
         private volatile int mInitErrors;
         private final Camera mCamera = Camera.openUninitialized();
@@ -135,9 +136,10 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
          *
          * @see #waitForOpen
          */
-        public CameraLooper(int cameraId, int clientUid) {
+        public CameraLooper(int cameraId, int clientUid, int oomScoreOffset) {
             mCameraId = cameraId;
             mClientUid = clientUid;
+            mOomScoreOffset = oomScoreOffset;
 
             mThread = new Thread(this, "LegacyCameraLooper");
             mThread.start();
@@ -155,7 +157,8 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
             // Save the looper so that we can terminate this thread
             // after we are done with it.
             mLooper = Looper.myLooper();
-            int initErrors = mCamera.cameraInitUnspecified(mCameraId, mClientUid);
+            int initErrors = mCamera.cameraInitUnspecified(
+                    mCameraId, mClientUid, mOomScoreOffset);
             boolean abandoned;
             synchronized (mOpenLock) {
                 mInitErrors = initErrors;
@@ -388,7 +391,8 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
     }
 
     public static CameraDeviceUserShim connectBinderShim(ICameraDeviceCallbacks callbacks,
-                                                         int cameraId, Size displaySize, int clientUid) {
+                                                         int cameraId, Size displaySize, int clientUid,
+                                                         int oomScoreOffset) {
         if (DEBUG) {
             Log.d(TAG, "Opening shim Camera device");
         }
@@ -399,7 +403,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
          * (e.g. in CTS which run its own default looper only after tests)
          */
 
-        CameraLooper init = new CameraLooper(cameraId, clientUid);
+        CameraLooper init = new CameraLooper(cameraId, clientUid, oomScoreOffset);
 
         CameraCallbackThread threadCallbacks = new CameraCallbackThread(callbacks);
 

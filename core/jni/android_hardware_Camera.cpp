@@ -559,7 +559,8 @@ static jint android_hardware_Camera_native_setup(JNIEnv *env, jobject thiz,
     jobject weak_this, jint cameraId, jint halVersion, jstring clientPackageName);
 
 static jint android_hardware_Camera_native_setupForUid(JNIEnv *env, jobject thiz,
-    jobject weak_this, jint cameraId, jint halVersion, jstring clientPackageName, jint clientUid)
+    jobject weak_this, jint cameraId, jint halVersion, jstring clientPackageName, jint clientUid,
+    jint oomScoreOffset)
 {
     // Convert jstring to String16
     const char16_t *rawClientName = reinterpret_cast<const char16_t*>(
@@ -572,12 +573,14 @@ static jint android_hardware_Camera_native_setupForUid(JNIEnv *env, jobject thiz
     int targetSdkVersion = android_get_application_target_sdk_version();
     sp<Camera> camera;
     if (halVersion == CAMERA_HAL_API_VERSION_NORMAL_CONNECT) {
+        // Camera1 opens retain their default arbitration priority.
+        if (oomScoreOffset != 0) return BAD_VALUE;
         // Default path: hal version is don't care, do normal camera connect.
         camera = Camera::connect(cameraId, clientName, clientUid,
                                         Camera::USE_CALLING_PID, targetSdkVersion);
     } else {
         jint status = Camera::connectLegacy(cameraId, halVersion, clientName,
-                clientUid, Camera::USE_CALLING_PID, camera);
+                clientUid, Camera::USE_CALLING_PID, oomScoreOffset, camera);
         if (status != NO_ERROR) {
             return status;
         }
@@ -653,7 +656,7 @@ static jint android_hardware_Camera_native_setupForUid(JNIEnv *env, jobject thiz
 static jint android_hardware_Camera_native_setup(JNIEnv *env, jobject thiz,
     jobject weak_this, jint cameraId, jint halVersion, jstring clientPackageName) {
     return android_hardware_Camera_native_setupForUid(env, thiz, weak_this, cameraId,
-            halVersion, clientPackageName, Camera::USE_CALLING_UID);
+            halVersion, clientPackageName, Camera::USE_CALLING_UID, /*oomScoreOffset*/ 0);
 }
 
 // disconnect from camera service
@@ -1081,7 +1084,7 @@ static const JNINativeMethod camMethods[] = {
     "(Ljava/lang/Object;IILjava/lang/String;)I",
     (void*)android_hardware_Camera_native_setup },
   { "native_setupForUid",
-    "(Ljava/lang/Object;IILjava/lang/String;I)I",
+    "(Ljava/lang/Object;IILjava/lang/String;II)I",
     (void*)android_hardware_Camera_native_setupForUid },
   { "native_release",
     "()V",

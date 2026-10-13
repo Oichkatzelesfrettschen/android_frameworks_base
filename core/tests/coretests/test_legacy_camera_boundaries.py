@@ -231,20 +231,27 @@ class LegacyCameraBoundaries(unittest.TestCase):
         self.assertIn("nativeDetectSurfaceType(surface)", raw)
         self.assertNotIn("ImageFormat.PRIVATE", raw)
         manager = (root / "camera2/CameraManager.java").read_text()
-        self.assertIn("getDisplaySize(), uid);", manager)
+        self.assertIn("getDisplaySize(), uid, oomScoreOffset);", manager)
         shim = (root / "camera2/legacy/CameraDeviceUserShim.java").read_text()
-        self.assertIn("new CameraLooper(cameraId, clientUid)", shim)
+        self.assertIn("new CameraLooper(cameraId, clientUid, oomScoreOffset)", shim)
         self.assertIn("mClientUid = clientUid;", shim)
-        self.assertIn("mCamera.cameraInitUnspecified(mCameraId, mClientUid)", shim)
+        self.assertIn(
+            "mCamera.cameraInitUnspecified( mCameraId, mClientUid, mOomScoreOffset)",
+            " ".join(shim.split()),
+        )
         camera = (root / "Camera.java").read_text()
         self.assertIn(
             "cameraInitVersion(cameraId, CAMERA_HAL_API_VERSION_UNSPECIFIED, clientUid)",
             camera,
         )
-        self.assertIn("ActivityThread.currentOpPackageName(), clientUid)", camera)
+        self.assertIn(
+            "ActivityThread.currentOpPackageName(), clientUid, oomScoreOffset)", camera
+        )
         native = (ROOT / "core/jni/android_hardware_Camera.cpp").read_text()
-        self.assertIn("clientUid, Camera::USE_CALLING_PID, camera)", native)
-        self.assertIn('"(Ljava/lang/Object;IILjava/lang/String;I)I"', native)
+        self.assertIn(
+            "clientUid, Camera::USE_CALLING_PID, oomScoreOffset, camera)", native
+        )
+        self.assertIn('"(Ljava/lang/Object;IILjava/lang/String;II)I"', native)
         request = (root / "camera2/legacy/RequestThreadManager.java").read_text()
         start = request.index("if (captureInfo == null || captureInfo.first == null) {")
         dropped = request[start : request.index("RequestHolder holder =", start)]

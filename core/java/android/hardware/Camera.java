@@ -545,6 +545,10 @@ public class Camera {
     }
 
     private int cameraInitVersion(int cameraId, int halVersion, int clientUid) {
+        return cameraInitVersion(cameraId, halVersion, clientUid, /*oomScoreOffset*/ 0);
+    }
+
+    private int cameraInitVersion(int cameraId, int halVersion, int clientUid, int oomScoreOffset) {
         mShutterCallback = null;
         mRawImageCallback = null;
         mJpegCallback = null;
@@ -563,7 +567,7 @@ public class Camera {
         }
 
         return native_setupForUid(new WeakReference<Camera>(this), cameraId, halVersion,
-                ActivityThread.currentOpPackageName(), clientUid);
+                ActivityThread.currentOpPackageName(), clientUid, oomScoreOffset);
     }
 
     private int cameraInitNormal(int cameraId) {
@@ -595,6 +599,16 @@ public class Camera {
      */
     public int cameraInitUnspecified(int cameraId, int clientUid) {
         return cameraInitVersion(cameraId, CAMERA_HAL_API_VERSION_UNSPECIFIED, clientUid);
+    }
+
+    /**
+     * Connect the camera2 shim using the delegated UID and camera-arbitration priority offset.
+     *
+     * @hide
+     */
+    public int cameraInitUnspecified(int cameraId, int clientUid, int oomScoreOffset) {
+        return cameraInitVersion(cameraId, CAMERA_HAL_API_VERSION_UNSPECIFIED,
+                clientUid, oomScoreOffset);
     }
 
     /** used by Camera#open, Camera#open(int) */
@@ -671,7 +685,7 @@ public class Camera {
                                            String packageName);
 
     private native final int native_setupForUid(Object camera_this, int cameraId, int halVersion,
-                                                String packageName, int clientUid);
+                                                String packageName, int clientUid, int oomScoreOffset);
 
     private native final void native_release();
 
