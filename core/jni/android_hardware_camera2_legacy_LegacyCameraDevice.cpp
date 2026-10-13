@@ -523,7 +523,7 @@ static jint LegacyCameraDevice_nativeDetectSurfaceDimens(JNIEnv* env, jobject th
     return NO_ERROR;
 }
 
-static jint LegacyCameraDevice_nativeDetectSurfaceUsageFlags(JNIEnv* env, jobject thiz,
+static jlong LegacyCameraDevice_nativeDetectSurfaceUsageFlags(JNIEnv* env, jobject thiz,
           jobject surface) {
     ALOGV("nativeDetectSurfaceUsageFlags");
 
@@ -533,8 +533,8 @@ static jint LegacyCameraDevice_nativeDetectSurfaceUsageFlags(JNIEnv* env, jobjec
             "Could not retrieve native window from surface.");
         return BAD_VALUE;
     }
-    int32_t usage = 0;
-    status_t err = anw->query(anw.get(), NATIVE_WINDOW_CONSUMER_USAGE_BITS, &usage);
+    uint64_t usage = 0;
+    status_t err = native_window_get_consumer_usage(anw.get(), &usage);
     if(err != NO_ERROR) {
         jniThrowException(env, "java/lang/UnsupportedOperationException",
             "Error while querying surface usage bits");
@@ -778,6 +778,7 @@ static jint LegacyCameraDevice_nativeSetScalingMode(JNIEnv* env, jobject thiz, j
     if ((err = native_window_set_scaling_mode(anw.get(), static_cast<int>(mode))) != NO_ERROR) {
         ALOGE("%s: Unable to set surface scaling mode, error %s (%d)", __FUNCTION__,
                 strerror(-err), err);
+        OVERRIDE_SURFACE_ERROR(err);
         return err;
     }
     return NO_ERROR;
@@ -828,7 +829,7 @@ static const JNINativeMethod gCameraDeviceMethods[] = {
     "()I",
     (void *)LegacyCameraDevice_nativeGetJpegFooterSize },
     { "nativeDetectSurfaceUsageFlags",
-    "(Landroid/view/Surface;)I",
+    "(Landroid/view/Surface;)J",
     (void *)LegacyCameraDevice_nativeDetectSurfaceUsageFlags },
     { "nativeSetScalingMode",
     "(Landroid/view/Surface;I)I",

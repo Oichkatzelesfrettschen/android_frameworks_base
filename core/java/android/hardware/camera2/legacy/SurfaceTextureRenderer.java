@@ -573,11 +573,11 @@ public class SurfaceTextureRenderer {
 
     private void checkEglDrawError(String msg)
             throws LegacyExceptionUtils.BufferQueueAbandonedException {
-        int error;
-        if ((error = EGL14.eglGetError()) == EGL14.EGL_BAD_NATIVE_WINDOW) {
+        int error = EGL14.eglGetError();
+        if (error == EGL14.EGL_BAD_NATIVE_WINDOW || error == EGL14.EGL_BAD_SURFACE) {
             throw new LegacyExceptionUtils.BufferQueueAbandonedException();
         }
-        if ((error = EGL14.eglGetError()) != EGL14.EGL_SUCCESS) {
+        if (error != EGL14.EGL_SUCCESS) {
             throw new IllegalStateException(msg + ": EGL error: 0x" + Integer.toHexString(error));
         }
     }

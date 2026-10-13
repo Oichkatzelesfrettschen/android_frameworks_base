@@ -541,6 +541,10 @@ public class Camera {
     }
 
     private int cameraInitVersion(int cameraId, int halVersion) {
+        return cameraInitVersion(cameraId, halVersion, ICameraService.USE_CALLING_UID);
+    }
+
+    private int cameraInitVersion(int cameraId, int halVersion, int clientUid) {
         mShutterCallback = null;
         mRawImageCallback = null;
         mJpegCallback = null;
@@ -558,8 +562,8 @@ public class Camera {
             mEventHandler = null;
         }
 
-        return native_setup(new WeakReference<Camera>(this), cameraId, halVersion,
-                ActivityThread.currentOpPackageName());
+        return native_setupForUid(new WeakReference<Camera>(this), cameraId, halVersion,
+                ActivityThread.currentOpPackageName(), clientUid);
     }
 
     private int cameraInitNormal(int cameraId) {
@@ -582,6 +586,11 @@ public class Camera {
      */
     public int cameraInitUnspecified(int cameraId) {
         return cameraInitVersion(cameraId, CAMERA_HAL_API_VERSION_UNSPECIFIED);
+    }
+
+    /** Connect the camera2 shim using the delegated application's UID. @hide */
+    public int cameraInitUnspecified(int cameraId, int clientUid) {
+        return cameraInitVersion(cameraId, CAMERA_HAL_API_VERSION_UNSPECIFIED, clientUid);
     }
 
     /** used by Camera#open, Camera#open(int) */
@@ -656,6 +665,9 @@ public class Camera {
     @UnsupportedAppUsage
     private native final int native_setup(Object camera_this, int cameraId, int halVersion,
                                            String packageName);
+
+    private native final int native_setupForUid(Object camera_this, int cameraId, int halVersion,
+                                                String packageName, int clientUid);
 
     private native final void native_release();
 

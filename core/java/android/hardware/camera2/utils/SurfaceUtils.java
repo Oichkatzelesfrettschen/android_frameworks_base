@@ -125,7 +125,7 @@ public class SurfaceUtils {
      */
     public static int detectSurfaceFormat(Surface surface) {
         try {
-            return LegacyCameraDevice.detectSurfaceType(surface);
+            return LegacyCameraDevice.detectSurfaceFormat(surface);
         } catch (BufferQueueAbandonedException e) {
             throw new IllegalArgumentException("Surface was abandoned", e);
         }

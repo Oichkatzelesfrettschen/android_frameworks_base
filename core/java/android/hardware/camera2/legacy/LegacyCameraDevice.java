@@ -643,7 +643,7 @@ public class LegacyCameraDevice implements AutoCloseable {
     }
 
     public static boolean isFlexibleConsumer(Surface output) {
-        int usageFlags = detectSurfaceUsageFlags(output);
+        long usageFlags = detectSurfaceUsageFlags(output);
 
         // Keep up to date with allowed consumer types in
         // frameworks/av/services/camera/libcameraservice/api2/CameraDeviceClient.cpp
@@ -656,7 +656,7 @@ public class LegacyCameraDevice implements AutoCloseable {
     }
 
     public static boolean isPreviewConsumer(Surface output) {
-        int usageFlags = detectSurfaceUsageFlags(output);
+        long usageFlags = detectSurfaceUsageFlags(output);
         int disallowedFlags = GRALLOC_USAGE_HW_VIDEO_ENCODER | GRALLOC_USAGE_RENDERSCRIPT |
                 GRALLOC_USAGE_SW_READ_OFTEN;
         int allowedFlags = GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER |
@@ -674,7 +674,7 @@ public class LegacyCameraDevice implements AutoCloseable {
     }
 
     public static boolean isVideoEncoderConsumer(Surface output) {
-        int usageFlags = detectSurfaceUsageFlags(output);
+        long usageFlags = detectSurfaceUsageFlags(output);
         int disallowedFlags = GRALLOC_USAGE_HW_TEXTURE | GRALLOC_USAGE_HW_COMPOSER |
                 GRALLOC_USAGE_RENDERSCRIPT | GRALLOC_USAGE_SW_READ_OFTEN;
         int allowedFlags = GRALLOC_USAGE_HW_VIDEO_ENCODER;
@@ -694,7 +694,7 @@ public class LegacyCameraDevice implements AutoCloseable {
     /**
      * Query the surface for its currently configured usage flags
      */
-    public static int detectSurfaceUsageFlags(Surface surface) {
+    public static long detectSurfaceUsageFlags(Surface surface) {
         checkNotNull(surface);
         return nativeDetectSurfaceUsageFlags(surface);
     }
@@ -702,9 +702,13 @@ public class LegacyCameraDevice implements AutoCloseable {
     /**
      * Query the surface for its currently configured format
      */
-    public static int detectSurfaceType(Surface surface) throws BufferQueueAbandonedException {
+    public static int detectSurfaceFormat(Surface surface) throws BufferQueueAbandonedException {
         checkNotNull(surface);
-        int surfaceType = nativeDetectSurfaceType(surface);
+        return LegacyExceptionUtils.throwOnError(nativeDetectSurfaceType(surface));
+    }
+
+    public static int detectSurfaceType(Surface surface) throws BufferQueueAbandonedException {
+        int surfaceType = detectSurfaceFormat(surface);
 
         // TODO: remove this override since the default format should be
         // ImageFormat.PRIVATE. b/9487482
@@ -876,7 +880,7 @@ public class LegacyCameraDevice implements AutoCloseable {
 
     private static native int nativeSetNextTimestamp(Surface surface, long timestamp);
 
-    private static native int nativeDetectSurfaceUsageFlags(Surface surface);
+    private static native long nativeDetectSurfaceUsageFlags(Surface surface);
 
     private static native int nativeSetScalingMode(Surface surface, int scalingMode);
 

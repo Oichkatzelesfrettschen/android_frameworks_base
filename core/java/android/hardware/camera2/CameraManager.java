@@ -726,7 +726,7 @@ public final class CameraManager {
 
                     Log.i(TAG, "Using legacy camera HAL.");
                     cameraUser = CameraDeviceUserShim.connectBinderShim(callbacks, id,
-                            getDisplaySize());
+                            getDisplaySize(), uid);
                 }
             } catch (ServiceSpecificException e) {
                 if (e.errorCode == ICameraService.ERROR_DEPRECATED_HAL) {

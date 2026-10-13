@@ -112,6 +112,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
      */
     private static class CameraLooper implements Runnable, AutoCloseable {
         private final int mCameraId;
+        private final int mClientUid;
         private Looper mLooper;
         private volatile int mInitErrors;
         private final Camera mCamera = Camera.openUninitialized();
@@ -134,8 +135,9 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
          *
          * @see #waitForOpen
          */
-        public CameraLooper(int cameraId) {
+        public CameraLooper(int cameraId, int clientUid) {
             mCameraId = cameraId;
+            mClientUid = clientUid;
 
             mThread = new Thread(this, "LegacyCameraLooper");
             mThread.start();
@@ -153,7 +155,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
             // Save the looper so that we can terminate this thread
             // after we are done with it.
             mLooper = Looper.myLooper();
-            int initErrors = mCamera.cameraInitUnspecified(mCameraId);
+            int initErrors = mCamera.cameraInitUnspecified(mCameraId, mClientUid);
             boolean abandoned;
             synchronized (mOpenLock) {
                 mInitErrors = initErrors;
@@ -386,7 +388,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
     }
 
     public static CameraDeviceUserShim connectBinderShim(ICameraDeviceCallbacks callbacks,
-                                                         int cameraId, Size displaySize) {
+                                                         int cameraId, Size displaySize, int clientUid) {
         if (DEBUG) {
             Log.d(TAG, "Opening shim Camera device");
         }
@@ -397,7 +399,7 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
          * (e.g. in CTS which run its own default looper only after tests)
          */
 
-        CameraLooper init = new CameraLooper(cameraId);
+        CameraLooper init = new CameraLooper(cameraId, clientUid);
 
         CameraCallbackThread threadCallbacks = new CameraCallbackThread(callbacks);
 
@@ -557,6 +559,10 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
         SparseArray<Surface> surfaces = new SparseArray<Surface>(outputConfigs.size());
         int idx = 0;
         for (OutputConfiguration outputConfig : outputConfigs) {
+            if (outputConfig.getRotation() != OutputConfiguration.ROTATION_0) {
+                Log.e(TAG, "Legacy devices do not support rotated outputs!");
+                return false;
+            }
             List<Surface> surfaceList = outputConfig.getSurfaces();
             if (surfaceList.isEmpty() || (surfaceList.size() > 1)) {
                 Log.e(TAG, "Legacy devices do not support deferred or shared surfaces!");

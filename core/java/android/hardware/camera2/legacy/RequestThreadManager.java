@@ -216,6 +216,7 @@ public class RequestThreadManager {
             Pair<RequestHolder, Long> captureInfo = mCaptureCollector.jpegProduced();
             if (captureInfo == null || captureInfo.first == null) {
                 Log.e(TAG, "Dropping jpeg frame.");
+                mReceivedJpeg.open();
                 return;
             }
             RequestHolder holder = captureInfo.first;

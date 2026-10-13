@@ -556,7 +556,10 @@ static void android_hardware_Camera_getCameraInfo(JNIEnv *env, jobject thiz,
 
 // connect to camera service
 static jint android_hardware_Camera_native_setup(JNIEnv *env, jobject thiz,
-    jobject weak_this, jint cameraId, jint halVersion, jstring clientPackageName)
+    jobject weak_this, jint cameraId, jint halVersion, jstring clientPackageName);
+
+static jint android_hardware_Camera_native_setupForUid(JNIEnv *env, jobject thiz,
+    jobject weak_this, jint cameraId, jint halVersion, jstring clientPackageName, jint clientUid)
 {
     // Convert jstring to String16
     const char16_t *rawClientName = reinterpret_cast<const char16_t*>(
@@ -570,11 +573,11 @@ static jint android_hardware_Camera_native_setup(JNIEnv *env, jobject thiz,
     sp<Camera> camera;
     if (halVersion == CAMERA_HAL_API_VERSION_NORMAL_CONNECT) {
         // Default path: hal version is don't care, do normal camera connect.
-        camera = Camera::connect(cameraId, clientName, Camera::USE_CALLING_UID,
+        camera = Camera::connect(cameraId, clientName, clientUid,
                                         Camera::USE_CALLING_PID, targetSdkVersion);
     } else {
         jint status = Camera::connectLegacy(cameraId, halVersion, clientName,
-                Camera::USE_CALLING_UID, Camera::USE_CALLING_PID, camera);
+                clientUid, Camera::USE_CALLING_PID, camera);
         if (status != NO_ERROR) {
             return status;
         }
@@ -645,6 +648,12 @@ static jint android_hardware_Camera_native_setup(JNIEnv *env, jobject thiz,
     }
 
     return NO_ERROR;
+}
+
+static jint android_hardware_Camera_native_setup(JNIEnv *env, jobject thiz,
+    jobject weak_this, jint cameraId, jint halVersion, jstring clientPackageName) {
+    return android_hardware_Camera_native_setupForUid(env, thiz, weak_this, cameraId,
+            halVersion, clientPackageName, Camera::USE_CALLING_UID);
 }
 
 // disconnect from camera service
@@ -1071,6 +1080,9 @@ static const JNINativeMethod camMethods[] = {
   { "native_setup",
     "(Ljava/lang/Object;IILjava/lang/String;)I",
     (void*)android_hardware_Camera_native_setup },
+  { "native_setupForUid",
+    "(Ljava/lang/Object;IILjava/lang/String;I)I",
+    (void*)android_hardware_Camera_native_setupForUid },
   { "native_release",
     "()V",
     (void*)android_hardware_Camera_release },
