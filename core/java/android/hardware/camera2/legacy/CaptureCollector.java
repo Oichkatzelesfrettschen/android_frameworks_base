@@ -629,7 +629,6 @@ public class CaptureCollector {
             if (h != null) {
                 mPreviewCaptureQueue.remove(h);
                 mPreviewProduceQueue.remove(h);
-                mActiveRequests.remove(h);
                 h.setPreviewFailed();
             }
         } finally {
@@ -656,7 +655,6 @@ public class CaptureCollector {
             if (h != null) {
                 mJpegCaptureQueue.remove(h);
                 mJpegProduceQueue.remove(h);
-                mActiveRequests.remove(h);
                 h.setJpegFailed();
             }
         } finally {

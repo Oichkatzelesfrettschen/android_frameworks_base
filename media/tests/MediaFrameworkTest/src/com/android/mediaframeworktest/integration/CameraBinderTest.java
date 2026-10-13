@@ -172,6 +172,8 @@ public class CameraBinderTest extends AndroidTestCase {
     public void testConnectLegacy() throws Exception {
         final int CAMERA_HAL_API_VERSION_1_0 = 0x100;
         for (int cameraId = 0; cameraId < mUtils.getGuessedNumCameras(); ++cameraId) {
+            boolean supportsCamera2 = mUtils.getCameraService().supportsCameraApi(
+                    String.valueOf(cameraId), API_VERSION_2);
             ICamera cameraUser = null;
             ICameraClient dummyCallbacks = new DummyCameraClient();
 
@@ -186,7 +188,9 @@ public class CameraBinderTest extends AndroidTestCase {
 
                 Log.v(TAG, String.format("Camera %s connected as HAL1 legacy device", cameraId));
             } catch (RuntimeException e) {
-                // Not all camera device support openLegacy.
+                if (!supportsCamera2) {
+                    throw e;
+                }
                 Log.i(TAG, "Unable to open camera as HAL1 legacy camera device " + e);
             } finally {
                 if (cameraUser != null) {
