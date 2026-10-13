@@ -588,7 +588,11 @@ public class Camera {
         return cameraInitVersion(cameraId, CAMERA_HAL_API_VERSION_UNSPECIFIED);
     }
 
-    /** Connect the camera2 shim using the delegated application's UID. @hide */
+    /**
+     * Connect the camera2 shim using the delegated application's UID.
+     *
+     * @hide
+     */
     public int cameraInitUnspecified(int cameraId, int clientUid) {
         return cameraInitVersion(cameraId, CAMERA_HAL_API_VERSION_UNSPECIFIED, clientUid);
     }
