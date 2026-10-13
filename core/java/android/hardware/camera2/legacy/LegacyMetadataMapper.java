@@ -640,9 +640,11 @@ public class LegacyMetadataMapper {
          * android.control.availableEffects
          */
         List<String> effectModes = p.getSupportedColorEffects();
-        int[] supportedEffectModes = (effectModes == null) ? new int[0] :
-                ArrayUtils.convertStringListToIntArray(effectModes, sLegacyEffectMode,
-                        sEffectModes);
+        int[] supportedEffectModes = ArrayUtils.convertStringListToIntArray(
+                effectModes, sLegacyEffectMode, sEffectModes);
+        if (supportedEffectModes == null || supportedEffectModes.length == 0) {
+            supportedEffectModes = new int[] { CONTROL_EFFECT_MODE_OFF };
+        }
         m.set(CONTROL_AVAILABLE_EFFECTS, supportedEffectModes);
 
         /*

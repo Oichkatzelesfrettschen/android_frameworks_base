@@ -686,19 +686,29 @@ public class CameraDeviceUserShim implements ICameraDeviceUser {
                 Log.e(TAG, err);
                 throw new ServiceSpecificException(ICameraService.ERROR_INVALID_OPERATION, err);
             }
-            if (outputConfiguration.getRotation() != OutputConfiguration.ROTATION_0) {
-                String err = "Cannot create stream, stream rotation is not supported.";
-                Log.e(TAG, err);
-                throw new ServiceSpecificException(ICameraService.ERROR_ILLEGAL_ARGUMENT, err);
+            try {
+                if (outputConfiguration == null) {
+                    throw new ServiceSpecificException(ICameraService.ERROR_ILLEGAL_ARGUMENT,
+                            "Cannot create stream, output configuration is null.");
+                }
+                if (outputConfiguration.getRotation() != OutputConfiguration.ROTATION_0) {
+                    throw new ServiceSpecificException(ICameraService.ERROR_ILLEGAL_ARGUMENT,
+                            "Cannot create stream, stream rotation is not supported.");
+                }
+                if (outputConfiguration.getSurfaces().size() != 1
+                        || outputConfiguration.getSurface() == null) {
+                    throw new ServiceSpecificException(ICameraService.ERROR_ILLEGAL_ARGUMENT,
+                            "Cannot create stream, deferred or shared surfaces are not supported.");
+                }
+                int id = ++mSurfaceIdCounter;
+                mSurfaces.put(id, outputConfiguration.getSurface());
+                return id;
+            } catch (RuntimeException error) {
+                // CameraDeviceImpl retains completed stream edits and skips endConfigure
+                // after a rejected output. Keep matching IDs and release the transaction.
+                mConfiguring = false;
+                throw error;
             }
-            if (outputConfiguration.getSurfaces().size() > 1) {
-                String err = "Cannot create stream, surface sharing is not supported.";
-                Log.e(TAG, err);
-                throw new ServiceSpecificException(ICameraService.ERROR_ILLEGAL_ARGUMENT, err);
-            }
-            int id = ++mSurfaceIdCounter;
-            mSurfaces.put(id, outputConfiguration.getSurface());
-            return id;
         }
     }
 
