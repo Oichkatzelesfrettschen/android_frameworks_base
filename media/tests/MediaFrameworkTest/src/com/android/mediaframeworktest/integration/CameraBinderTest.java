@@ -168,6 +168,38 @@ public class CameraBinderTest extends AndroidTestCase {
         }
     }
 
+    @SmallTest
+    public void testConnectLegacy() throws Exception {
+        final int CAMERA_HAL_API_VERSION_1_0 = 0x100;
+        for (int cameraId = 0; cameraId < mUtils.getGuessedNumCameras(); ++cameraId) {
+            boolean supportsCamera2 = mUtils.getCameraService().supportsCameraApi(
+                    String.valueOf(cameraId), API_VERSION_2);
+            ICamera cameraUser = null;
+            ICameraClient dummyCallbacks = new DummyCameraClient();
+
+            String clientPackageName = getContext().getPackageName();
+
+            try {
+                cameraUser = mUtils.getCameraService()
+                        .connectLegacy(dummyCallbacks, cameraId, CAMERA_HAL_API_VERSION_1_0,
+                                clientPackageName,
+                                ICameraService.USE_CALLING_UID, ICameraService.USE_CALLING_PID);
+                assertNotNull(String.format("Camera %s was null", cameraId), cameraUser);
+
+                Log.v(TAG, String.format("Camera %s connected as HAL1 legacy device", cameraId));
+            } catch (RuntimeException e) {
+                if (!supportsCamera2) {
+                    throw e;
+                }
+                Log.i(TAG, "Unable to open camera as HAL1 legacy camera device " + e);
+            } finally {
+                if (cameraUser != null) {
+                    cameraUser.disconnect();
+                }
+            }
+        }
+    }
+
     static class DummyCameraDeviceCallbacks extends ICameraDeviceCallbacks.Stub {
 
         /*
