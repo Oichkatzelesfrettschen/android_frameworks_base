@@ -16,6 +16,7 @@
 
 #include "HardwareBitmapUploader.h"
 
+#include <android-base/properties.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
@@ -29,6 +30,8 @@
 #include <utils/NdkUtils.h>
 #include <utils/Trace.h>
 
+#include <cstring>
+#include <limits>
 #include <thread>
 
 #include "hwui/Bitmap.h"
@@ -287,6 +290,112 @@ private:
     std::mutex mVkLock;
 };
 
+static bool useCpuBitmapUpload() {
+    static const bool enabled =
+            base::GetBoolProperty("ro.hwui.hardware_bitmap_cpu_upload", false);
+    return enabled;
+}
+
+static uint64_t hardwareBitmapUsage() {
+    return AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+            (useCpuBitmapUpload() ? AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY
+                                  : AHARDWAREBUFFER_USAGE_CPU_WRITE_NEVER);
+}
+
+static bool uploadHardwareBitmapWithCpu(const SkBitmap& bitmap, AHardwareBuffer* buffer) {
+    AHardwareBuffer_Desc desc = {};
+    AHardwareBuffer_describe(buffer, &desc);
+    if (bitmap.width() <= 0 || bitmap.height() <= 0 || !bitmap.getPixels() ||
+        desc.width != static_cast<uint32_t>(bitmap.width()) ||
+        desc.height != static_cast<uint32_t>(bitmap.height()) || desc.layers != 1 ||
+        desc.stride < desc.width) {
+        ALOGW("Invalid hardware bitmap upload dimensions or storage");
+        return false;
+    }
+
+    size_t sourcePixelBytes;
+    size_t destinationPixelBytes;
+    uint32_t expectedFormat;
+    switch (bitmap.colorType()) {
+        case kGray_8_SkColorType:
+            sourcePixelBytes = 1;
+            destinationPixelBytes = 4;
+            expectedFormat = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+            break;
+        case kRGBA_8888_SkColorType:
+            sourcePixelBytes = destinationPixelBytes = 4;
+            expectedFormat = AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM;
+            break;
+        case kRGB_565_SkColorType:
+            sourcePixelBytes = destinationPixelBytes = 2;
+            expectedFormat = AHARDWAREBUFFER_FORMAT_R5G6B5_UNORM;
+            break;
+        case kRGBA_F16_SkColorType:
+            sourcePixelBytes = destinationPixelBytes = 8;
+            expectedFormat = AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT;
+            break;
+        default:
+            ALOGW("Unsupported hardware bitmap upload color type: %d", bitmap.colorType());
+            return false;
+    }
+    const size_t maximumSize = std::numeric_limits<size_t>::max();
+    if (desc.format != expectedFormat || desc.stride > maximumSize / destinationPixelBytes ||
+        desc.width > maximumSize / sourcePixelBytes) {
+        ALOGW("Invalid hardware bitmap upload format or stride");
+        return false;
+    }
+    const size_t sourceRowBytes = desc.width * sourcePixelBytes;
+    const size_t destinationRowBytes = desc.width * destinationPixelBytes;
+    const size_t destinationStride = desc.stride * destinationPixelBytes;
+    const size_t sourceStride = bitmap.rowBytes();
+    const size_t precedingRows = desc.height - 1;
+    if (sourceStride < sourceRowBytes ||
+        (precedingRows &&
+         (sourceStride > (maximumSize - sourceRowBytes) / precedingRows ||
+          destinationStride > (maximumSize - destinationRowBytes) / precedingRows))) {
+        ALOGW("Hardware bitmap upload storage size overflows");
+        return false;
+    }
+
+    // Legacy gralloc reports a pixel stride through describe; lockAndGetInfo requires gralloc 3.
+    void* mappedPixels = nullptr;
+    int status = AHardwareBuffer_lock(buffer, AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY, -1,
+                                     nullptr, &mappedPixels);
+    if (status != 0) {
+        ALOGW("Hardware bitmap upload lock fails: %d", status);
+        return false;
+    }
+    if (mappedPixels) {
+        const auto* source = static_cast<const uint8_t*>(bitmap.getPixels());
+        auto* destination = static_cast<uint8_t*>(mappedPixels);
+        for (uint32_t row = 0; row < desc.height; row++) {
+            if (bitmap.colorType() == kGray_8_SkColorType) {
+                for (size_t column = 0; column < desc.width; column++) {
+                    destination[column * 4] = source[column];
+                    destination[column * 4 + 1] = source[column];
+                    destination[column * 4 + 2] = source[column];
+                    destination[column * 4 + 3] = 255;
+                }
+            } else {
+                memcpy(destination, source, destinationRowBytes);
+            }
+            // Avoid constructing a pointer beyond the final row's allocation.
+            if (row + 1 < desc.height) {
+                source += sourceStride;
+                destination += destinationStride;
+            }
+        }
+    } else {
+        ALOGW("Hardware bitmap upload lock returns an empty mapping");
+    }
+    // A null fence requests synchronous completion before the GPU samples the buffer.
+    status = AHardwareBuffer_unlock(buffer, nullptr);
+    if (status != 0) {
+        ALOGW("Hardware bitmap upload unlock fails: %d", status);
+    }
+    return mappedPixels != nullptr && status == 0;
+}
+
 bool HardwareBitmapUploader::hasFP16Support() {
     static std::once_flag sOnce;
     static bool hasFP16Support = false;
@@ -299,9 +408,7 @@ bool HardwareBitmapUploader::hasFP16Support() {
                 .height = 1,
                 .layers = 1,
                 .format = AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT,
-                .usage = AHARDWAREBUFFER_USAGE_CPU_READ_NEVER |
-                         AHARDWAREBUFFER_USAGE_CPU_WRITE_NEVER |
-                         AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
+                .usage = hardwareBitmapUsage(),
         };
         UniqueAHardwareBuffer buffer = allocateAHardwareBuffer(desc);
         hasFP16Support = buffer != nullptr;
@@ -398,8 +505,7 @@ sk_sp<Bitmap> HardwareBitmapUploader::allocateHardwareBitmap(const SkBitmap& sou
             .height = static_cast<uint32_t>(bitmap.height()),
             .layers = 1,
             .format = format.bufferFormat,
-            .usage = AHARDWAREBUFFER_USAGE_CPU_READ_NEVER | AHARDWAREBUFFER_USAGE_CPU_WRITE_NEVER |
-                     AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE,
+            .usage = hardwareBitmapUsage(),
     };
     UniqueAHardwareBuffer ahb = allocateAHardwareBuffer(desc);
     if (!ahb) {
@@ -407,16 +513,24 @@ sk_sp<Bitmap> HardwareBitmapUploader::allocateHardwareBitmap(const SkBitmap& sou
         return nullptr;
     };
 
-    createUploader(usingGL);
-
-    if (!sUploader->uploadHardwareBitmap(bitmap, format, ahb.get())) {
-        return nullptr;
+    if (useCpuBitmapUpload()) {
+        if (!uploadHardwareBitmapWithCpu(bitmap, ahb.get())) {
+            return nullptr;
+        }
+    } else {
+        createUploader(usingGL);
+        if (!sUploader->uploadHardwareBitmap(bitmap, format, ahb.get())) {
+            return nullptr;
+        }
     }
     return Bitmap::createFrom(ahb.get(), bitmap.colorType(), bitmap.refColorSpace(),
                               bitmap.alphaType(), Bitmap::computePalette(bitmap));
 }
 
 void HardwareBitmapUploader::initialize() {
+    if (useCpuBitmapUpload()) {
+        return;
+    }
     bool usingGL = uirenderer::Properties::getRenderPipelineType() ==
             uirenderer::RenderPipelineType::SkiaGL;
     createUploader(usingGL);
