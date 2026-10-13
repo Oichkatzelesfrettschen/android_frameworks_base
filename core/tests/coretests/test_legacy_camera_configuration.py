@@ -14,6 +14,8 @@ EGL_ADDITIONS = r"""
     static class EGL14 {
         static final int EGL_NONE=0, EGL_SUCCESS=0x3000, EGL_BAD_NATIVE_WINDOW=0x300b, EGL_BAD_SURFACE=0x300d;
         static int error=EGL_SUCCESS;
+        static final Object EGL_NO_SURFACE=new Object();
+        static boolean eglDestroySurface(Object display,Object surface) { return true; }
         static Object eglCreateWindowSurface(Object display,Object config,Surface surface,int[] attributes,int offset) {
             error=surface.mode==4 ? EGL_BAD_NATIVE_WINDOW : surface.mode==5 ? EGL_BAD_SURFACE : surface.mode==6 ? 0x3003 : EGL_SUCCESS;
             return error==EGL_SUCCESS ? new Object() : null;
@@ -29,15 +31,17 @@ EGL_ADDITIONS = r"""
         return result;
     }
     public static void main(String[] args) {
-        for(int[] modes:new int[][]{{4},{5},{4,5},{4,0},{0,5},{4,3}}) {
+        for(int[] modes:new int[][]{{4},{5},{4,5},{4,0},{0,5},{4,3},{0},{3},{0,3}}) {
             SurfaceAdmissionFixture renderer=new SurfaceAdmissionFixture();
-            renderer.configureSurfaces(outputs(modes));
+            boolean accepted=renderer.configureSurfaces(outputs(modes));
             int regular=0,conversion=0;
             for(int mode:modes) { if(mode==0) regular++; if(mode==3) conversion++; }
             int admitted=regular+conversion>0 ? 1 : 0;
-            if(renderer.mSurfaces.size()!=regular || renderer.mConversionSurfaces.size()!=conversion ||
-                renderer.initialized!=admitted || renderer.current!=admitted ||
-                (renderer.mSurfaceTexture!=null)!=(admitted==1)) throw new AssertionError(Arrays.toString(modes));
+            boolean exact=regular+conversion==modes.length;
+            if(accepted!=exact || renderer.mSurfaces.size()!=(exact ? regular : 0) ||
+                renderer.mConversionSurfaces.size()!=(exact ? conversion : 0) ||
+                renderer.initialized!=(exact ? admitted : 0) || renderer.current!=admitted ||
+                (renderer.mSurfaceTexture!=null)!=(exact && admitted==1)) throw new AssertionError(Arrays.toString(modes));
             renderer.configureSurfaces(outputs(0));
             if(renderer.mSurfaceTexture==null) throw new AssertionError("reopen");
         }
@@ -146,7 +150,7 @@ class LegacyCameraConfiguration(unittest.TestCase):
         )
         subprocess.run([str(java / "java"), "-cp", str(output), name], check=True)
 
-    def test_egl_creation_removes_only_abandoned_outputs(self):
+    def test_egl_creation_rejects_incomplete_output_sets(self):
         source = (
             ROOT
             / "core/java/android/hardware/camera2/legacy/SurfaceTextureRenderer.java"
@@ -162,10 +166,15 @@ class LegacyCameraConfiguration(unittest.TestCase):
             "    void configureEGLOutputSurfaces(Collection<EGLSurfaceHolder> surfaces) { regular+=surfaces.size(); }",
             "",
         )
+        prefix = prefix.replace(
+            "    void destroyOutputSurface(EGLSurfaceHolder holder) {}", ""
+        )
         methods = "\n".join(
             function(source, signature)
             for signature in (
-                "public void configureSurfaces(",
+                "public boolean configureSurfaces(",
+                "private void destroyOutputSurface(",
+                "private boolean makeCurrentOutput(",
                 "private void configureEGLOutputSurfaces(",
                 "private void checkEglDrawError(",
             )

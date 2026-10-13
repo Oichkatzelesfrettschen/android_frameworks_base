@@ -135,6 +135,7 @@ public class LegacyCameraDevice implements AutoCloseable {
                  */
                 case CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DISCONNECTED:
                 case CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_SERVICE:
+                case CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DISABLED:
                 case CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE: {
                     mIdle.open();
 
@@ -367,6 +368,7 @@ public class LegacyCameraDevice implements AutoCloseable {
      */
     public int configureOutputs(SparseArray<Surface> outputs, boolean validateSurfacesOnly) {
         List<Pair<Surface, Size>> sizedSurfaces = new ArrayList<>();
+        int jpegOutputCount = 0;
         if (outputs != null) {
             int count = outputs.size();
             for (int i = 0; i < count; i++)  {
@@ -386,6 +388,19 @@ public class LegacyCameraDevice implements AutoCloseable {
                 try {
                     Size s = getSurfaceSize(output);
                     int surfaceType = detectSurfaceType(output);
+                    if (surfaceType == LegacyMetadataMapper.HAL_PIXEL_FORMAT_BLOB &&
+                            detectSurfaceDataspace(output) !=
+                            StreamConfigurationMap.HAL_DATASPACE_V0_JFIF) {
+                        Log.e(TAG, "Legacy BLOB output requires JPEG/JFIF dataspace");
+                        return BAD_VALUE;
+                    }
+                    if (surfaceType == LegacyMetadataMapper.HAL_PIXEL_FORMAT_BLOB ||
+                            surfaceType == ImageFormat.JPEG) {
+                        if (++jpegOutputCount > 1) {
+                            Log.e(TAG, "Legacy camera supports one JPEG output stream");
+                            return BAD_VALUE;
+                        }
+                    }
 
                     boolean flexibleConsumer = isFlexibleConsumer(output);
 
@@ -434,8 +449,12 @@ public class LegacyCameraDevice implements AutoCloseable {
 
         boolean success = false;
         if (mDeviceState.setConfiguring()) {
-            mRequestThreadManager.configure(sizedSurfaces);
+            boolean configured = mRequestThreadManager.configure(sizedSurfaces);
             success = mDeviceState.setIdle();
+            if (!configured) {
+                mConfiguredSurfaces = null;
+                return BAD_VALUE;
+            }
         }
 
         if (success) {
