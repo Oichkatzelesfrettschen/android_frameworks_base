@@ -1279,7 +1279,13 @@ public class LegacyMetadataMapper {
         // AWB is always unconditionally available in API1 devices
 
         // control.aeAntibandingMode
-        m.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, CONTROL_AE_ANTIBANDING_MODE_AUTO);
+        int[] antibandingModes = c.get(CONTROL_AE_AVAILABLE_ANTIBANDING_MODES);
+        if (antibandingModes != null && antibandingModes.length > 0) {
+            int antibandingMode = ArrayUtils.contains(antibandingModes,
+                    CONTROL_AE_ANTIBANDING_MODE_AUTO) ? CONTROL_AE_ANTIBANDING_MODE_AUTO :
+                    antibandingModes[0];
+            m.set(CaptureRequest.CONTROL_AE_ANTIBANDING_MODE, antibandingMode);
+        }
 
         // control.aeExposureCompensation
         m.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, 0);

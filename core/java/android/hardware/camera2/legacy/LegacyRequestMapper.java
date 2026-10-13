@@ -394,6 +394,7 @@ public class LegacyRequestMapper {
                     // Location.getTime() is in milliseconds; setGpsTimestamp takes seconds.
                     params.setGpsTimestamp(location.getTime() / 1000);
                 } else {
+                    params.removeGpsData();
                     Log.w(TAG, "Incomplete GPS parameters provided in location " + location);
                 }
             } else {

@@ -46,6 +46,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 
@@ -470,10 +471,17 @@ public class SurfaceTextureRenderer {
         int[] surfaceAttribs = {
                 EGL14.EGL_NONE
         };
-        for (EGLSurfaceHolder holder : surfaces) {
+        Iterator<EGLSurfaceHolder> iterator = surfaces.iterator();
+        while (iterator.hasNext()) {
+            EGLSurfaceHolder holder = iterator.next();
             holder.eglSurface = EGL14.eglCreateWindowSurface(mEGLDisplay, mConfigs,
                     holder.surface, surfaceAttribs, /*offset*/ 0);
-            checkEglError("eglCreateWindowSurface");
+            try {
+                checkEglDrawError("eglCreateWindowSurface");
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                iterator.remove();
+                Log.w(TAG, "Surface abandoned during EGL creation; skipping output.", e);
+            }
         }
     }
 
@@ -745,6 +753,11 @@ public class SurfaceTextureRenderer {
         // Set up pbuffer surface if needed
         if (mConversionSurfaces.size() > 0) {
             configureEGLPbufferSurfaces(mConversionSurfaces);
+        }
+
+        if (mSurfaces.isEmpty() && mConversionSurfaces.isEmpty()) {
+            releaseEGLContext();
+            return;
         }
 
         try {

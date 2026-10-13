@@ -538,6 +538,7 @@ public class Camera {
             // Should never hit this.
             throw new RuntimeException("Unknown camera error");
         }
+        initAppOps();
     }
 
     private int cameraInitVersion(int cameraId, int halVersion) {
