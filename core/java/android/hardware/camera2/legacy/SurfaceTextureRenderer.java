@@ -717,16 +717,21 @@ public class SurfaceTextureRenderer {
                 holder.width = surfaceSize.getWidth();
                 holder.height = surfaceSize.getHeight();
                 if (LegacyCameraDevice.needsConversion(s)) {
-                    mConversionSurfaces.add(holder);
                     // LegacyCameraDevice is the producer of surfaces if it's not handled by EGL,
                     // so LegacyCameraDevice needs to connect to the surfaces.
                     LegacyCameraDevice.connectSurface(s);
+                    mConversionSurfaces.add(holder);
                 } else {
                     mSurfaces.add(holder);
                 }
             } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
                 Log.w(TAG, "Surface abandoned, skipping configuration... ", e);
             }
+        }
+
+        if (mSurfaces.isEmpty() && mConversionSurfaces.isEmpty()) {
+            Log.w(TAG, "All output surfaces are abandoned; skipping GL configuration.");
+            return;
         }
 
         // Set up egl display

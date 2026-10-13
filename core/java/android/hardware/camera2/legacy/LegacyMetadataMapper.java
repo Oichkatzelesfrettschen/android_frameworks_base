@@ -397,9 +397,11 @@ public class LegacyMetadataMapper {
             int j = 0;
             for (String mode : antiBandingModes) {
                 int convertedMode = convertAntiBandingMode(mode);
-                if (DEBUG && convertedMode == -1) {
-                    Log.v(TAG, "Antibanding mode " + ((mode == null) ? "NULL" : mode) +
-                            " not supported, skipping...");
+                if (convertedMode == -1) {
+                    if (DEBUG) {
+                        Log.v(TAG, "Antibanding mode " + ((mode == null) ? "NULL" : mode) +
+                                " not supported, skipping...");
+                    }
                 } else {
                     modes[j++] = convertedMode;
                 }

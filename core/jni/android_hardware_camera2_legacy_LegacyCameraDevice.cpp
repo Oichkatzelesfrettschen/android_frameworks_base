@@ -121,12 +121,21 @@ static status_t connectSurface(const sp<Surface>& surface, int32_t maxBufferSlac
         return err;
     }
 
+    const auto disconnectOnFailure = [&surface](status_t originalError) {
+        status_t disconnectError = surface->disconnect(NATIVE_WINDOW_API_CAMERA);
+        if (disconnectError != NO_ERROR) {
+            ALOGE("Failed to disconnect surface after setup failure: %s (%d).",
+                    strerror(-disconnectError), disconnectError);
+        }
+        return originalError;
+    };
+
     err = native_window_set_usage(surface.get(), GRALLOC_USAGE_SW_WRITE_OFTEN);
     if (err != NO_ERROR) {
         ALOGE("%s: Failed to set native window usage flag, error %s (%d).", __FUNCTION__,
                 strerror(-err), err);
         OVERRIDE_SURFACE_ERROR(err);
-        return err;
+        return disconnectOnFailure(err);
     }
 
     int minUndequeuedBuffers;
@@ -136,7 +145,7 @@ static status_t connectSurface(const sp<Surface>& surface, int32_t maxBufferSlac
         ALOGE("%s: Failed to get native window min undequeued buffers, error %s (%d).",
                 __FUNCTION__, strerror(-err), err);
         OVERRIDE_SURFACE_ERROR(err);
-        return err;
+        return disconnectOnFailure(err);
     }
 
     ALOGV("%s: Setting buffer count to %d", __FUNCTION__,
@@ -146,7 +155,7 @@ static status_t connectSurface(const sp<Surface>& surface, int32_t maxBufferSlac
         ALOGE("%s: Failed to set native window buffer count, error %s (%d).", __FUNCTION__,
                 strerror(-err), err);
         OVERRIDE_SURFACE_ERROR(err);
-        return err;
+        return disconnectOnFailure(err);
     }
     return NO_ERROR;
 }
@@ -557,8 +566,7 @@ static jint LegacyCameraDevice_nativeDisconnectSurface(JNIEnv* env, jobject thiz
 
     status_t err = native_window_api_disconnect(anw.get(), NATIVE_WINDOW_API_CAMERA);
     if(err != NO_ERROR) {
-        jniThrowException(env, "java/lang/UnsupportedOperationException",
-            "Error while disconnecting surface");
+        ALOGE("Error while disconnecting surface: %s (%d)", strerror(-err), err);
         OVERRIDE_SURFACE_ERROR(err);
         return err;
     }
