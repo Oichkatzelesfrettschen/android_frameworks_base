@@ -26,6 +26,7 @@ import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 
 /**
  * Collect timestamps and state for each {@link CaptureRequest} as it passes through
@@ -274,6 +275,11 @@ public class CaptureCollector {
                             -1);
         }
 
+        @Override
+        public int hashCode() {
+            return Long.hashCode(mRequest.getFrameNumber());
+        }
+
         // Comparison and equals based on frame number.
         @Override
         public boolean equals(Object o) {
@@ -335,46 +341,43 @@ public class CaptureCollector {
      * @throws InterruptedException if this thread is interrupted.
      */
     public boolean queueRequest(RequestHolder holder, LegacyRequest legacy, long timeout,
-                                TimeUnit unit)
+                                TimeUnit unit) throws InterruptedException {
+        return queueRequest(holder, legacy, timeout, unit, () -> true);
+    }
+
+    /** Admit a request only while its dequeued burst belongs to the active flush generation. */
+    public boolean queueRequest(RequestHolder holder, LegacyRequest legacy, long timeout,
+                                TimeUnit unit, BooleanSupplier isCurrent)
             throws InterruptedException {
-        CaptureHolder h = new CaptureHolder(holder, legacy);
+        CaptureHolder capture = new CaptureHolder(holder, legacy);
         long nanos = unit.toNanos(timeout);
-        final ReentrantLock lock = this.mLock;
+        final ReentrantLock lock = mLock;
         lock.lock();
         try {
-            if (DEBUG) {
-                Log.d(TAG, "queueRequest  for request " + holder.getRequestId() +
-                        " - " + mInFlight + " requests remain in flight.");
-            }
-
-            if (!(h.needsJpeg || h.needsPreview)) {
+            if (!(capture.needsJpeg || capture.needsPreview)) {
                 throw new IllegalStateException("Request must target at least one output surface!");
             }
-
-            if (h.needsJpeg) {
-                // Wait for all current requests to finish before queueing jpeg.
-                while (mInFlight > 0) {
-                    if (nanos <= 0) {
-                        return false;
-                    }
-                    nanos = mIsEmpty.awaitNanos(nanos);
+            // Complete all capacity waits before inserting either side of a mixed request.
+            while (capture.needsJpeg ? mInFlight > 0 : mInFlight >= mMaxInFlight) {
+                if (!isCurrent.getAsBoolean() || nanos <= 0) {
+                    return false;
                 }
-                mJpegCaptureQueue.add(h);
-                mJpegProduceQueue.add(h);
+                nanos = capture.needsJpeg ? mIsEmpty.awaitNanos(nanos)
+                        : mNotFull.awaitNanos(nanos);
             }
-            if (h.needsPreview) {
-                while (mInFlight >= mMaxInFlight) {
-                    if (nanos <= 0) {
-                        return false;
-                    }
-                    nanos = mNotFull.awaitNanos(nanos);
-                }
-                mPreviewCaptureQueue.add(h);
-                mPreviewProduceQueue.add(h);
+            if (!isCurrent.getAsBoolean()) {
+                return false;
+            }
+            if (capture.needsJpeg) {
+                mJpegCaptureQueue.add(capture);
+                mJpegProduceQueue.add(capture);
+            }
+            if (capture.needsPreview) {
+                mPreviewCaptureQueue.add(capture);
+                mPreviewProduceQueue.add(capture);
                 mInFlightPreviews++;
             }
-            mActiveRequests.add(h);
-
+            mActiveRequests.add(capture);
             mInFlight++;
             return true;
         } finally {

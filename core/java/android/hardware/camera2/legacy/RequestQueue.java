@@ -39,12 +39,20 @@ public class RequestQueue {
     private long mCurrentFrameNumber = 0;
     private long mCurrentRepeatingFrameNumber = INVALID_FRAME;
     private int mCurrentRequestId = 0;
+    private long mGeneration = 0;
     private final List<Long> mJpegSurfaceIds;
 
     public final class RequestQueueEntry {
         private final BurstHolder mBurstHolder;
         private final Long mFrameNumber;
         private final boolean mQueueEmpty;
+        private final long mEntryGeneration;
+
+        public boolean isCurrent() {
+            synchronized (RequestQueue.this) {
+                return mEntryGeneration == mGeneration;
+            }
+        }
 
         public BurstHolder getBurstHolder() {
             return mBurstHolder;
@@ -60,7 +68,13 @@ public class RequestQueue {
             mBurstHolder = burstHolder;
             mFrameNumber = frameNumber;
             mQueueEmpty = queueEmpty;
+            mEntryGeneration = mGeneration;
         }
+    }
+
+    /** Invalidate dequeued bursts before failing their collector admissions. */
+    public synchronized void invalidateRequests() {
+        mGeneration++;
     }
 
     public RequestQueue(List<Long> jpegSurfaceIds) {
