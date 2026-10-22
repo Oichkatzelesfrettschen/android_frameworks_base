@@ -479,10 +479,41 @@ public class SurfaceTextureRenderer {
             try {
                 checkEglDrawError("eglCreateWindowSurface");
             } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                destroyOutputSurface(holder);
                 iterator.remove();
                 Log.w(TAG, "Surface abandoned during EGL creation; skipping output.", e);
             }
         }
+    }
+
+    private void destroyOutputSurface(EGLSurfaceHolder holder) {
+        if (holder.eglSurface != null && holder.eglSurface != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglDestroySurface(mEGLDisplay, holder.eglSurface);
+            holder.eglSurface = EGL14.EGL_NO_SURFACE;
+        }
+    }
+
+    private boolean makeCurrentOutput(Collection<EGLSurfaceHolder> outputs) {
+        Iterator<EGLSurfaceHolder> iterator = outputs.iterator();
+        while (iterator.hasNext()) {
+            EGLSurfaceHolder holder = iterator.next();
+            try {
+                makeCurrent(holder.eglSurface);
+                return true;
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                destroyOutputSurface(holder);
+                if (outputs == mConversionSurfaces) {
+                    try {
+                        LegacyCameraDevice.disconnectSurface(holder.surface);
+                    } catch (LegacyExceptionUtils.BufferQueueAbandonedException abandoned) {
+                        Log.w(TAG, "Conversion output is abandoned during disconnect", abandoned);
+                    }
+                }
+                iterator.remove();
+                Log.w(TAG, "Surface abandoned while selecting the EGL context output", e);
+            }
+        }
+        return false;
     }
 
     private void configureEGLPbufferSurfaces(Collection<EGLSurfaceHolder> surfaces) {
@@ -707,12 +738,12 @@ public class SurfaceTextureRenderer {
      *
      * @param surfaces a {@link Collection} of surfaces.
      */
-    public void configureSurfaces(Collection<Pair<Surface, Size>> surfaces) {
+    public boolean configureSurfaces(Collection<Pair<Surface, Size>> surfaces) {
         releaseEGLContext();
 
         if (surfaces == null || surfaces.size() == 0) {
             Log.w(TAG, "No output surfaces configured for GL drawing.");
-            return;
+            return true;
         }
 
         for (Pair<Surface, Size> p : surfaces) {
@@ -739,7 +770,7 @@ public class SurfaceTextureRenderer {
 
         if (mSurfaces.isEmpty() && mConversionSurfaces.isEmpty()) {
             Log.w(TAG, "All output surfaces are abandoned; skipping GL configuration.");
-            return;
+            return false;
         }
 
         // Set up egl display
@@ -757,14 +788,13 @@ public class SurfaceTextureRenderer {
 
         if (mSurfaces.isEmpty() && mConversionSurfaces.isEmpty()) {
             releaseEGLContext();
-            return;
+            return false;
         }
 
-        try {
-            makeCurrent((mSurfaces.size() > 0) ? mSurfaces.get(0).eglSurface :
-                mConversionSurfaces.get(0).eglSurface);
-        } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
-                Log.w(TAG, "Surface abandoned, skipping configuration... ", e);
+        boolean current = makeCurrentOutput(mSurfaces) || makeCurrentOutput(mConversionSurfaces);
+        if (!current || mSurfaces.size() + mConversionSurfaces.size() != surfaces.size()) {
+            releaseEGLContext();
+            return false;
         }
 
         initializeGLState();
@@ -774,6 +804,7 @@ public class SurfaceTextureRenderer {
         if (SystemProperties.getBoolean(LEGACY_PERF_PROPERTY, false)) {
             setupGlTiming();
         }
+        return true;
     }
 
     /**

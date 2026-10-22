@@ -31,6 +31,7 @@ public class SurfaceAdmissionFixture {
     static class SurfaceTexture { SurfaceTexture(int texture) {} }
     static class SystemProperties { static boolean getBoolean(String key,boolean value) { return value; } }
     static class LegacyCameraDevice {
+        static void disconnectSurface(Surface surface) throws LegacyExceptionUtils.BufferQueueAbandonedException {}
         static boolean needsConversion(Surface surface) throws LegacyExceptionUtils.BufferQueueAbandonedException {
             if (surface.mode==1) throw new LegacyExceptionUtils.BufferQueueAbandonedException();
             return surface.mode>=2;
@@ -46,6 +47,7 @@ public class SurfaceAdmissionFixture {
     void configureEGLContext() { contexts++; }
     void configureEGLOutputSurfaces(Collection<EGLSurfaceHolder> surfaces) { regular+=surfaces.size(); }
     void configureEGLPbufferSurfaces(Collection<EGLSurfaceHolder> surfaces) { converted+=surfaces.size(); }
+    void destroyOutputSurface(EGLSurfaceHolder holder) {}
     void makeCurrent(Object surface) throws LegacyExceptionUtils.BufferQueueAbandonedException { current++; }
     void initializeGLState() { initialized++; }
     int getTextureId() { return 1; }
@@ -60,13 +62,14 @@ RENDER_CASES = r"""
     public static void main(String[] args) {
         for (int[] modes : new int[][]{{},{1},{1,1},{2},{1,2},{0},{3},{1,0,2,3}}) {
             SurfaceAdmissionFixture fixture=new SurfaceAdmissionFixture();
-            fixture.configureSurfaces(outputs(modes));
+            boolean accepted=fixture.configureSurfaces(outputs(modes));
             int regular=0,converted=0;
             for (int mode : modes) { if (mode==0) regular++; if (mode==3) converted++; }
             int admitted=regular+converted>0 ? 1 : 0;
+            boolean exact=regular+converted==modes.length;
             if (fixture.contexts!=admitted || fixture.regular!=regular || fixture.converted!=converted ||
-                fixture.current!=admitted || fixture.initialized!=admitted ||
-                (fixture.mSurfaceTexture!=null)!=(admitted==1)) throw new AssertionError(Arrays.toString(modes));
+                fixture.current!=admitted || fixture.initialized!=(exact ? admitted : 0) ||
+                accepted!=exact || (fixture.mSurfaceTexture!=null)!=(exact && admitted==1)) throw new AssertionError(Arrays.toString(modes));
             fixture.configureSurfaces(outputs(1,2));
             if (!fixture.mSurfaces.isEmpty() || !fixture.mConversionSurfaces.isEmpty() ||
                 fixture.mSurfaceTexture!=null || fixture.contexts!=admitted)
@@ -241,7 +244,8 @@ class LegacyCameraAdmission(unittest.TestCase):
         self.run_java(
             "SurfaceAdmissionFixture",
             RENDER_PREFIX
-            + function(source, "public void configureSurfaces(")
+            + function(source, "public boolean configureSurfaces(")
+            + function(source, "private boolean makeCurrentOutput(")
             + RENDER_CASES,
         )
 

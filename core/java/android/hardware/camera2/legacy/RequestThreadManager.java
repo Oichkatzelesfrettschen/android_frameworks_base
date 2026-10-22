@@ -117,6 +117,7 @@ public class RequestThreadManager {
     private static class ConfigureHolder {
         public final ConditionVariable condition;
         public final Collection<Pair<Surface, Size>> surfaces;
+        public volatile boolean success;
 
         public ConfigureHolder(ConditionVariable condition, Collection<Pair<Surface,
                 Size>> surfaces) {
@@ -350,7 +351,7 @@ public class RequestThreadManager {
         }
     }
 
-    private void configureOutputs(Collection<Pair<Surface, Size>> outputs) {
+    private boolean configureOutputs(Collection<Pair<Surface, Size>> outputs) {
         if (DEBUG) {
             String outputsStr = outputs == null ? "null" : (outputs.size() + " surfaces");
             Log.d(TAG, "configureOutputs with " + outputsStr);
@@ -362,7 +363,7 @@ public class RequestThreadManager {
             Log.e(TAG, "Received device exception in configure call: ", e);
             mDeviceState.setError(
                     CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE);
-            return;
+            return false;
         }
 
         /*
@@ -378,7 +379,7 @@ public class RequestThreadManager {
             Log.e(TAG, "Received device exception in configure call: ", e);
             mDeviceState.setError(
                     CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE);
-            return;
+            return false;
         }
 
         if (mGLThreadManager != null) {
@@ -397,6 +398,7 @@ public class RequestThreadManager {
         List<Size> previewOutputSizes = new ArrayList<>();
         List<Size> callbackOutputSizes = new ArrayList<>();
 
+        boolean surfacesAccepted = true;
         int facing = mCharacteristics.get(CameraCharacteristics.LENS_FACING);
         int orientation = mCharacteristics.get(CameraCharacteristics.SENSOR_ORIENTATION);
         if (outputs != null) {
@@ -429,7 +431,8 @@ public class RequestThreadManager {
                             break;
                     }
                 } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
-                    Log.w(TAG, "Surface abandoned, skipping...", e);
+                    Log.w(TAG, "Surface abandoned during configuration.", e);
+                    surfacesAccepted = false;
                 }
             }
         }
@@ -439,7 +442,7 @@ public class RequestThreadManager {
             Log.e(TAG, "Received device exception: ", e);
             mDeviceState.setError(
                 CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE);
-            return;
+            return false;
         }
 
         List<int[]> supportedFpsRanges = mParams.getSupportedPreviewFpsRange();
@@ -519,14 +522,25 @@ public class RequestThreadManager {
         for (Surface p : mPreviewOutputs) {
             previews.add(new Pair<>(p, previewSizeIter.next()));
         }
-        mGLThreadManager.setConfigurationAndWait(previews, mCaptureCollector);
+        surfacesAccepted &= mGLThreadManager.setConfigurationAndWait(previews, mCaptureCollector);
 
         for (Surface p : mPreviewOutputs) {
             try {
                 LegacyCameraDevice.setSurfaceOrientation(p, facing, orientation);
             } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
-                Log.e(TAG, "Surface abandoned, skipping setSurfaceOrientation()", e);
+                Log.e(TAG, "Surface abandoned during orientation configuration", e);
+                surfacesAccepted = false;
             }
+        }
+
+        if (!surfacesAccepted) {
+            mGLThreadManager.setConfigurationAndWait(null, mCaptureCollector);
+            resetJpegSurfaceFormats(mCallbackOutputs);
+            disconnectCallbackSurfaces();
+            mCallbackOutputs.clear();
+            mPreviewOutputs.clear();
+            mJpegSurfaceIds.clear();
+            return false;
         }
 
         mGLThreadManager.allowNewFrames();
@@ -541,8 +555,9 @@ public class RequestThreadManager {
                 Log.e(TAG, "Received device exception while configuring: ", e);
                 mDeviceState.setError(
                         CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_DEVICE);
-
+                return false;
         }
+        return true;
     }
 
     private void resetJpegSurfaceFormats(Collection<Surface> surfaces) {
@@ -713,7 +728,7 @@ public class RequestThreadManager {
                     Log.i(TAG, "Configure outputs: " + sizes + " surfaces configured.");
 
                     // configure() blocks on config.condition whatever the outcome; a
-                    // failure leaves the device in error, so its setIdle() fails.
+                    // rejected output set returns false; device exceptions enter error state.
                     try {
                         try {
                             boolean success = mCaptureCollector.waitForEmpty(JPEG_FRAME_TIMEOUT,
@@ -729,7 +744,7 @@ public class RequestThreadManager {
                             break;
                         }
 
-                        configureOutputs(config.surfaces);
+                        config.success = configureOutputs(config.surfaces);
                     } catch (RuntimeException e) {
                         Log.e(TAG, "Received device exception while configuring outputs: ", e);
                         mDeviceState.setError(
@@ -790,10 +805,17 @@ public class RequestThreadManager {
                     }
 
                     // Complete each request in the burst
-                    BurstHolder burstHolder = nextBurst.getBurstHolder();
+                    final RequestQueue.RequestQueueEntry activeBurst = nextBurst;
+                    BurstHolder burstHolder = activeBurst.getBurstHolder();
                     List<RequestHolder> requests =
                             burstHolder.produceRequestHolders(nextBurst.getFrameNumber());
                     for (RequestHolder holder : requests) {
+                        if (!activeBurst.isCurrent()) {
+                            holder.failRequest();
+                            mDeviceState.setCaptureStart(holder, /*timestamp*/0,
+                                    CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_REQUEST);
+                            continue;
+                        }
                         CaptureRequest request = holder.getRequest();
 
                         boolean paramsChanged = false;
@@ -835,11 +857,12 @@ public class RequestThreadManager {
 
                         try {
                             boolean success = mCaptureCollector.queueRequest(holder,
-                                    mLastRequest, JPEG_FRAME_TIMEOUT, TimeUnit.MILLISECONDS);
+                                    mLastRequest, JPEG_FRAME_TIMEOUT, TimeUnit.MILLISECONDS,
+                                    activeBurst::isCurrent);
 
                             if (!success) {
                                 // Report a request error if we timed out while queuing this.
-                                Log.e(TAG, "Timed out while queueing capture request.");
+                                Log.w(TAG, "Capture request expires or its burst is flushed before admission.");
                                 holder.failRequest();
                                 mDeviceState.setCaptureStart(holder, /*timestamp*/0,
                                         CameraDeviceImpl.CameraDeviceCallbacks.
@@ -1052,20 +1075,27 @@ public class RequestThreadManager {
      */
     public long flush() {
         Log.i(TAG, "Flushing all pending requests.");
-        long lastFrame = mRequestQueue.stopRepeating();
-        // Queued bursts never reach the camera; each of their requests fails with
-        // its own frame number so the client's capture sequences complete, and
-        // the already-posted MSG_SUBMIT_CAPTURE_REQUEST finds an empty queue.
-        for (RequestQueue.RequestQueueEntry entry : mRequestQueue.drainQueued()) {
-            for (RequestHolder holder :
-                    entry.getBurstHolder().produceRequestHolders(entry.getFrameNumber())) {
-                holder.failRequest();
-                mDeviceState.setCaptureStart(holder, /*timestamp*/0,
-                        CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_REQUEST);
+        synchronized (mIdleLock) {
+            final long lastFrame;
+            final List<RequestQueue.RequestQueueEntry> drained;
+            synchronized (mRequestQueue) {
+                mRequestQueue.invalidateRequests();
+                lastFrame = mRequestQueue.stopRepeating();
+                drained = mRequestQueue.drainQueued();
             }
+            // Collector admission checks the generation under its own lock. A request
+            // admitted before invalidation belongs to failAll; a later admission fails.
+            mCaptureCollector.failAll();
+            for (RequestQueue.RequestQueueEntry entry : drained) {
+                for (RequestHolder holder :
+                        entry.getBurstHolder().produceRequestHolders(entry.getFrameNumber())) {
+                    holder.failRequest();
+                    mDeviceState.setCaptureStart(holder, /*timestamp*/0,
+                            CameraDeviceImpl.CameraDeviceCallbacks.ERROR_CAMERA_REQUEST);
+                }
+            }
+            return lastFrame;
         }
-        mCaptureCollector.failAll();
-        return lastFrame;
     }
 
     /**
@@ -1129,12 +1159,13 @@ public class RequestThreadManager {
      *
      * @param outputs a {@link java.util.Collection} of outputs to configure.
      */
-    public void configure(Collection<Pair<Surface, Size>> outputs) {
+    public boolean configure(Collection<Pair<Surface, Size>> outputs) {
         Handler handler = mRequestThread.waitAndGetHandler();
         final ConditionVariable condition = new ConditionVariable(/*closed*/false);
         ConfigureHolder holder = new ConfigureHolder(condition, outputs);
         handler.sendMessage(handler.obtainMessage(MSG_CONFIGURE_OUTPUTS, 0, 0, holder));
         condition.block();
+        return holder.success;
     }
 
     public void setAudioRestriction(int mode) {
