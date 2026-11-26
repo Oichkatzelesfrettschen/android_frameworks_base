@@ -284,6 +284,11 @@ public class GLThreadManager {
         mTextureRenderer.disconnectIonOutputQueues();
     }
 
+    /** Rebuild FIFO outputs that a recording stop disconnected while they stay configured. */
+    public void reconnectIonOutputs() {
+        runOnGlAndWait(() -> mTextureRenderer.reconnectIonOutputs());
+    }
+
     /** Finish queued draws before stopping the HAL recording pool. */
     public void stopIonRecordingDraws() {
         runOnGlAndWait(() -> mTextureRenderer.setRecordSource(false));

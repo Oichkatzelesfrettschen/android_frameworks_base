@@ -84,6 +84,9 @@ public class SurfaceTextureRenderer {
 
     private List<EGLSurfaceHolder> mSurfaces = new ArrayList<EGLSurfaceHolder>();
     private volatile Surface[] mIonFifoOutputs = new Surface[0];
+    // Set once the FIFO outputs' EGL producers are disconnected; a second disconnect of the
+    // same Surface returns BAD_VALUE, so each configuration disconnects at most once.
+    private volatile boolean mIonOutputsDisconnected = false;
     private List<EGLSurfaceHolder> mConversionSurfaces = new ArrayList<EGLSurfaceHolder>();
 
     private ByteBuffer mPBufferPixels;
@@ -452,6 +455,7 @@ public class SurfaceTextureRenderer {
 
     private void clearState() {
         mIonFifoOutputs = new Surface[0];
+        mIonOutputsDisconnected = false;
         mSurfaces.clear();
         for (EGLSurfaceHolder holder : mConversionSurfaces) {
             try {
@@ -784,6 +788,8 @@ public class SurfaceTextureRenderer {
 
     /** Cancel terminal output waits before the request thread joins the GL thread. */
     public void disconnectIonOutputQueues() {
+        if (mIonOutputsDisconnected) return;
+        mIonOutputsDisconnected = true;
         for (Surface surface : mIonFifoOutputs) {
             try {
                 LegacyExceptionUtils.throwOnError(
@@ -792,6 +798,34 @@ public class SurfaceTextureRenderer {
                 Log.w(TAG, "ION terminal output already disconnected", exception);
             }
         }
+    }
+
+    /**
+     * Rebuild the EGL window surfaces of FIFO outputs disconnected by
+     * {@link #disconnectIonOutputQueues} while they stay configured, and restore their default
+     * dequeue behavior; the next recording start selects FIFO again. GL thread only.
+     */
+    public void reconnectIonOutputs() {
+        if (!mIonOutputsDisconnected) return;
+        int[] surfaceAttribs = {EGL14.EGL_NONE};
+        for (EGLSurfaceHolder holder : mSurfaces) {
+            if (!holder.ionOutputFifo) continue;
+            holder.ionOutputFifo = false;
+            if (holder.eglSurface != null) {
+                EGL14.eglDestroySurface(mEGLDisplay, holder.eglSurface);
+            }
+            holder.eglSurface = EGL14.eglCreateWindowSurface(mEGLDisplay, mConfigs,
+                    holder.surface, surfaceAttribs, /*offset*/ 0);
+            checkEglError("eglCreateWindowSurface");
+            try {
+                LegacyExceptionUtils.throwOnError(
+                        LegacyCameraDevice.nativeSetIonOutputFifo(holder.surface, false));
+            } catch (LegacyExceptionUtils.BufferQueueAbandonedException e) {
+                Log.w(TAG, "ION FIFO output abandoned while reconnecting", e);
+            }
+        }
+        mIonFifoOutputs = new Surface[0];
+        mIonOutputsDisconnected = false;
     }
 
     /** Destroy imported images before the EGL context that owns them. */

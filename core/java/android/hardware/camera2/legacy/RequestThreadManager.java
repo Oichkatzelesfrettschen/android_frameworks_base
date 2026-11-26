@@ -448,7 +448,7 @@ public class RequestThreadManager {
                 holder.setOutputAbandoned();
             }
         } else if (!targeted && mRecordStreamRunning && repeating) {
-            stopRecordStream();
+            stopRecordStream(/*outputsStayConfigured*/ true);
         }
     }
 
@@ -491,15 +491,18 @@ public class RequestThreadManager {
                 throw new IllegalStateException("HAL1 ION recording stream unavailable", e);
             }
         } else if (!active && mGlRecordStreamRunning && repeating) {
-            stopGlRecordStream();
+            stopGlRecordStream(/*outputsStayConfigured*/ true);
         }
     }
 
-    private void stopGlRecordStream() {
+    private void stopGlRecordStream(boolean outputsStayConfigured) {
         if (!mGlRecordStreamRunning) {
             return;
         }
         mGlRecordStreamRunning = false;
+        // FIFO outputs carry no dequeue deadline: a recording consumer that stopped draining
+        // parks the GL thread in eglSwapBuffers, so wake it before the synchronous stop.
+        mGLThreadManager.disconnectIonOutputQueues();
         mGLThreadManager.stopIonRecordingDraws();
         try {
             LegacyExceptionUtils.throwOnError(LegacyCameraDevice.nativeStopIonRecordingStream(
@@ -509,6 +512,9 @@ public class RequestThreadManager {
         } finally {
             mGLThreadManager.destroyIonRecordingBridge();
             mIonRecordingBridge = 0;
+            if (outputsStayConfigured) {
+                mGLThreadManager.reconnectIonOutputs();
+            }
         }
     }
 
@@ -541,8 +547,8 @@ public class RequestThreadManager {
         return best;
     }
 
-    private void stopRecordStream() {
-        stopGlRecordStream();
+    private void stopRecordStream(boolean outputsStayConfigured) {
+        stopGlRecordStream(outputsStayConfigured);
         if (!mRecordStreamRunning) {
             return;
         }
@@ -569,7 +575,7 @@ public class RequestThreadManager {
                 // GL stop and idle wait below.
                 mGLThreadManager.disconnectIonOutputQueues();
             }
-            stopRecordStream();
+            stopRecordStream(/*outputsStayConfigured*/ false);
             stopPreview();
         }  catch (RuntimeException e) {
             Log.e(TAG, "Received device exception in configure call: ", e);
@@ -1132,7 +1138,7 @@ public class RequestThreadManager {
                             if (holder.hasJpegTargets()) {
                                 // A still stops HAL1 preview; the next repeating preview
                                 // request restarts the GL recording stream.
-                                stopGlRecordStream();
+                                stopGlRecordStream(/*outputsStayConfigured*/ true);
                                 while(!mCaptureCollector.waitForPreviewsEmpty(PREVIEW_FRAME_TIMEOUT,
                                         TimeUnit.MILLISECONDS)) {
                                     // Fail preview requests until the queue is empty.
@@ -1279,7 +1285,7 @@ public class RequestThreadManager {
                     }
                     if (mCamera != null) {
                         try {
-                            stopRecordStream();
+                            stopRecordStream(/*outputsStayConfigured*/ false);
                         } catch (RuntimeException e) {
                             Log.e(TAG, "Recording stream stop failed during cleanup", e);
                         }
