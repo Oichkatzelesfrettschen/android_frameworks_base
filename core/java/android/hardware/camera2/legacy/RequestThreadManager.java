@@ -562,6 +562,13 @@ public class RequestThreadManager {
         }
 
         try {
+            if (mGLThreadManager != null) {
+                // FIFO outputs carry no dequeue deadline, so an output whose consumer stopped
+                // draining parks the GL thread in eglSwapBuffers. Configure replaces these
+                // outputs; disconnecting them first wakes that dequeue before the synchronous
+                // GL stop and idle wait below.
+                mGLThreadManager.disconnectIonOutputQueues();
+            }
             stopRecordStream();
             stopPreview();
         }  catch (RuntimeException e) {

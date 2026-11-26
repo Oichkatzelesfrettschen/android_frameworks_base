@@ -767,6 +767,21 @@ public class SurfaceTextureRenderer {
         return mIonRecordingBridge;
     }
 
+    /**
+     * The recording source stalls when neither a GL bind nor a HAL recording callback is newer
+     * than {@link #RECORD_STALL_NS}. A callback the bridge queues or drops still counts, so GL
+     * backpressure on a nondroppable output never reads as a stalled source.
+     */
+    private boolean recordSourceStalled() {
+        long lastNs = mLastRecordArrivalNs;
+        if (mIonRecordingBridge != 0) {
+            // Both clocks are CLOCK_MONOTONIC: System.nanoTime and systemTime(MONOTONIC).
+            lastNs = Math.max(lastNs,
+                    LegacyCameraDevice.nativeIonRecordingLastArrivalNs(mIonRecordingBridge));
+        }
+        return System.nanoTime() - lastNs > RECORD_STALL_NS;
+    }
+
     /** Cancel terminal output waits before the request thread joins the GL thread. */
     public void disconnectIonOutputQueues() {
         for (Surface surface : mIonFifoOutputs) {
@@ -966,7 +981,7 @@ public class SurfaceTextureRenderer {
             } else {
                 st.updateTexImage();
             }
-            if (mRecordSource && System.nanoTime() - mLastRecordArrivalNs > RECORD_STALL_NS) {
+            if (mRecordSource && recordSourceStalled()) {
                 throw new IllegalStateException("HAL1 ION recording stream stalls");
             }
             if (mRecordSource) return;

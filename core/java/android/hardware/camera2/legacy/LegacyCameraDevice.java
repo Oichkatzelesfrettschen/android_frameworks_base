@@ -925,6 +925,7 @@ public class LegacyCameraDevice implements AutoCloseable {
     static native int nativeStopIonRecordingStream(Camera camera);
     static native long nativeBindIonRecordingFrame(long bridge, int texture);
     static native void nativeIonRecordingFrameDrawn(long bridge);
+    static native long nativeIonRecordingLastArrivalNs(long bridge);
     static native void nativeDestroyIonRecordingBridge(long bridge);
     static native int nativeDescribeIonOutput(Surface surface, int index);
     static native int nativeSetIonOutputFifo(Surface surface, boolean enabled);

@@ -1108,6 +1108,15 @@ static void LegacyCameraDevice_nativeIonRecordingFrameDrawn(JNIEnv* env, jobject
 #endif
 }
 
+static jlong LegacyCameraDevice_nativeIonRecordingLastArrivalNs(JNIEnv*, jobject, jlong handle) {
+#if defined(LEGACY_CAMERA_ION_IMPORT)
+    if (handle == 0) return 0;
+    return reinterpret_cast<IonRecordingStreamBridge*>(handle)->lastArrivalNs();
+#else
+    return 0;
+#endif
+}
+
 static void LegacyCameraDevice_nativeDestroyIonRecordingBridge(JNIEnv* env, jobject,
         jlong handle) {
 #if defined(LEGACY_CAMERA_ION_IMPORT)
@@ -1210,6 +1219,8 @@ static const JNINativeMethod gCameraDeviceMethods[] = {
       (void *)LegacyCameraDevice_nativeBindIonRecordingFrame },
     { "nativeIonRecordingFrameDrawn", "(J)V",
       (void *)LegacyCameraDevice_nativeIonRecordingFrameDrawn },
+    { "nativeIonRecordingLastArrivalNs", "(J)J",
+      (void *)LegacyCameraDevice_nativeIonRecordingLastArrivalNs },
     { "nativeDestroyIonRecordingBridge", "(J)V",
       (void *)LegacyCameraDevice_nativeDestroyIonRecordingBridge },
     { "nativeDiscardIonPreviewFrame", "(Landroid/graphics/SurfaceTexture;)I",

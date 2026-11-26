@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -72,8 +73,13 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
         return mImporter.initialize(mWidth, mHeight);
     }
 
+    // CLOCK_MONOTONIC time of the last HAL recording callback, 0 before the first.
+    nsecs_t lastArrivalNs() const { return mLastArrivalNs.load(std::memory_order_relaxed); }
+
     void onRecordingFrame(const sp<Camera>& camera, nsecs_t timestamp,
                           const sp<IMemory>& frame) override {
+        // Every HAL callback marks the source live, including frames the queue drops.
+        mLastArrivalNs.store(systemTime(SYSTEM_TIME_MONOTONIC), std::memory_order_relaxed);
         errno = 0;
         const int callerNice = getpriority(PRIO_PROCESS, 0);
         const bool restoreNice = errno == 0 && callerNice > ANDROID_PRIORITY_URGENT_DISPLAY;
@@ -261,6 +267,7 @@ class IonRecordingStreamBridge : public CameraRecordingFrameSink {
     }
 
    private:
+    std::atomic<nsecs_t> mLastArrivalNs{0};
     static constexpr size_t kPoolSize = 16;
     static constexpr size_t kQueueDepth = 5;
     static constexpr size_t kHeldBudget = 6;
